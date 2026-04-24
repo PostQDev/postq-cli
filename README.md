@@ -7,6 +7,7 @@ postq auth login --api-key pq_live_…
 postq scan url example.com
 postq scan url a.com b.com c.com --concurrency 5
 postq scan url example.com --no-upload --json
+postq scan cloud aws --account 123456789012 --role-arn arn:aws:iam::123456789012:role/PostQScanner
 postq scan list --limit 10
 ```
 
@@ -57,6 +58,7 @@ postq scan url example.com
 postq <command> [subcommand] [flags] [args]
 
   scan url <host>...        TLS handshake + cert quantum-risk scan
+  scan cloud aws            Scan AWS KMS keys for quantum-vulnerable algorithms
   scan list                 Recent scans uploaded to your org
   auth login                Save API key for uploads
   auth whoami               Show active credentials (masked)
@@ -81,6 +83,12 @@ Auth is stored at `~/.postq/config.json` (file mode `0600`). Override with:
 | `--insecure` (`scan url`)               | Skip TLS certificate verification                             |
 | `--timeout <dur>` (`scan url`)          | Per-host TLS timeout (e.g. `5s`, `1m`)                        |
 | `--concurrency <n>` (`scan url`)        | Number of hosts to scan in parallel (default 4)               |
+| `--account <id>` (`scan cloud aws`)     | AWS account ID to scan (defaults to caller identity)          |
+| `--regions <list>` (`scan cloud aws`)   | Comma-separated regions (default: `us-east-1,us-west-2,eu-west-1`) |
+| `--role-arn <arn>` (`scan cloud aws`)   | IAM role to assume in the target account                      |
+| `--external-id <id>` (`scan cloud aws`) | External ID for cross-account role assumption                 |
+
+The `scan cloud aws` subcommand uses your local AWS credentials (env vars, `~/.aws/credentials`, IMDS, etc.) and submits results to `POST /v1/scans/cloud`. It enumerates KMS keys across the requested regions and flags RSA / ECC keys as quantum-vulnerable.
 
 ## Exit codes
 
@@ -125,8 +133,8 @@ Required GitHub Secret on this repo: `HOMEBREW_TAP_TOKEN` (PAT with `contents:wr
 
 - `postq scan github <repo>` — static analysis of source for RSA/ECDSA/MD5
 - `postq scan k8s [--context …]` — TLS secrets, ingress certs, mTLS policies
-- `postq scan aws [--regions …]` — KMS, ACM, ALB, S3, Secrets Manager
-- `postq scan azure [--subscription …]` — Key Vault, App Service, Storage
+- `postq scan cloud aws` — KMS keys (shipped); ACM, ALB, S3, Secrets Manager next
+- `postq scan cloud azure [--subscription …]` — Key Vault, App Service, Storage
 - `postq scan bulk --file targets.txt` — fan-out over many targets
 - Scoop bucket for Windows
 - Native packages (`.deb`, `.rpm`, `.apk`)

@@ -9,7 +9,7 @@ cmd/postq/main.go              Entrypoint. Parses ldflag-injected version/commit
 internal/commands/             Subcommand dispatcher + help text.
 internal/config/               ~/.postq/config.json (mode 0600). Resolve order: flag > env > file.
 internal/scanurl/              Real TLS handshake + cert + cipher analysis.
-internal/apiclient/            POST /v1/scans, GET /v1/scans → PostQ API.
+internal/apiclient/            POST /v1/scans, POST /v1/scans/cloud, GET /v1/scans → PostQ API.
 internal/report/               Wire format. Mirrors postq-site/apps/api/src/routes/v1-scans.ts.
 internal/ui/                   TTY-aware ANSI colors, severity/risk badges.
 .goreleaser.yaml               Cross-platform release config.
@@ -52,6 +52,8 @@ That's it — GitHub Actions runs GoReleaser, which builds 6 binaries, makes a G
 3. Update `printScanHelp()` example list.
 4. Append to roadmap in [README.md](README.md).
 5. Update `Type` field of submission to match a value the API accepts (`url|github|aws|azure|kubernetes|bulk`).
+
+For cloud providers, follow the two-level `scan cloud <provider>` pattern (see `runScanCloud` → `runScanCloudAWS`). Cloud scans POST to `/v1/scans/cloud` instead of `/v1/scans` and include provider/account/region metadata.
 
 ## Cross-repo touch points
 
