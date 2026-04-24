@@ -1,0 +1,141 @@
+// Package apiclient submits scan reports to the PostQ API.
+package apiclient
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	"github.com/postqdev/postq-cli/internal/report"
+)
+
+// Client posts scan submissions to /v1/scans on the PostQ API.
+type Client struct {
+	endpoint  string
+	apiKey    string
+	userAgent string
+	http      *http.Client
+}
+
+// New creates a Client. userAgent is sent in the User-Agent header so
+// the server can correlate uploads with CLI versions.
+func New(endpoint, apiKey, userAgent string) *Client {
+	if userAgent == "" {
+		userAgent = "postq-cli/dev"
+	}
+	return &Client{
+		endpoint:  endpoint,
+		apiKey:    apiKey,
+		userAgent: userAgent,
+		http:      &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// SubmitResponse is the API's success payload.
+type SubmitResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"createdAt"`
+		URL       string `json:"url"`
+	} `json:"data"`
+	Error string `json:"error,omitempty"`
+}
+
+// ListResponse is the API's response for GET /v1/scans.
+type ListResponse struct {
+	Success bool `json:"success"`
+	Data    []struct {
+		ID            string `json:"id"`
+		Type          string `json:"type"`
+		Target        string `json:"target"`
+		RiskScore     int    `json:"riskScore"`
+		RiskLevel     string `json:"riskLevel"`
+		FindingsCount int    `json:"findingsCount"`
+		Source        string `json:"source"`
+		CreatedAt     string `json:"createdAt"`
+		URL           string `json:"url"`
+	} `json:"data"`
+	Error string `json:"error,omitempty"`
+}
+
+// Submit POSTs the report to /v1/scans and returns the parsed response.
+func (c *Client) Submit(ctx context.Context, sub *report.Submission) (*SubmitResponse, error) {
+	body, err := json.Marshal(sub)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.endpoint+"/v1/scans",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("post /v1/scans: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+
+	var parsed SubmitResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode >= 400 || !parsed.Success {
+		msg := parsed.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+		}
+		return nil, fmt.Errorf("api error: %s", msg)
+	}
+	return &parsed, nil
+}
+
+// List GETs /v1/scans and returns recent scans visible to the API key.
+func (c *Client) List(ctx context.Context, limit int) (*ListResponse, error) {
+	url := fmt.Sprintf("%s/v1/scans?limit=%d", c.endpoint, limit)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get /v1/scans: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var parsed ListResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode >= 400 || !parsed.Success {
+		msg := parsed.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+		}
+		return nil, fmt.Errorf("api error: %s", msg)
+	}
+	return &parsed, nil
+}
+
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+}

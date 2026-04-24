@@ -1,0 +1,87 @@
+version: 2
+project_name: postq
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: postq
+    main: ./cmd/postq
+    binary: postq
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+archives:
+  - id: postq
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: Bug Fixes
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Other
+      order: 999
+
+brews:
+  - name: postq
+    repository:
+      owner: PostQDev
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://postq.dev"
+    description: "PostQ CLI — quantum-risk scanning for TLS, certs, and cloud crypto."
+    license: "MIT"
+    install: |
+      bin.install "postq"
+    test: |
+      system "#{bin}/postq", "version"
+
+release:
+  github:
+    owner: PostQDev
+    name: postq-cli
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## PostQ CLI v{{ .Version }}
+
+    Install via Homebrew:
+    ```
+    brew install PostQDev/tap/postq
+    ```
+
+    Or grab a pre-built binary below.

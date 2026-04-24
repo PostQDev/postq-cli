@@ -1,0 +1,17 @@
+# Build artifacts (binary at repo root)
+/postq
+/postq.exe
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local dev config
+.envrc
+.env
+.env.local
