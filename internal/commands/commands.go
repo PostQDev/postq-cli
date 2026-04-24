@@ -240,7 +240,9 @@ func runScan(args []string, build BuildInfo) error {
 		return runScanURL(args[1:], build)
 	case "list":
 		return runScanList(args[1:], build)
-	case "github", "aws", "azure", "k8s", "kubernetes", "bulk":
+	case "cloud":
+		return runScanCloud(args[1:], build)
+	case "github", "azure", "k8s", "kubernetes", "bulk":
 		return fmt.Errorf("scan %s: not implemented yet (coming soon)", args[0])
 	default:
 		printScanHelp()
@@ -252,17 +254,18 @@ func printScanHelp() {
 	fmt.Println(ui.Bold("postq scan") + " — run quantum-risk scans")
 	fmt.Println()
 	fmt.Println(ui.Bold("SUBCOMMANDS"))
-	fmt.Println("  " + ui.Cyan("url") + "      TLS handshake + cert quantum-risk scan")
-	fmt.Println("  " + ui.Cyan("list") + "     Show recent scans uploaded to your org")
-	fmt.Println("  " + ui.Dim("github   Static analysis of repo for quantum-vulnerable algos (soon)"))
-	fmt.Println("  " + ui.Dim("aws      KMS / ACM / ALB / S3 / Secrets Manager scan (soon)"))
-	fmt.Println("  " + ui.Dim("azure    Key Vault / App Service / Storage scan (soon)"))
-	fmt.Println("  " + ui.Dim("k8s      In-cluster TLS secrets / ingress / mTLS scan (soon)"))
+	fmt.Println("  " + ui.Cyan("url") + "        TLS handshake + cert quantum-risk scan")
+	fmt.Println("  " + ui.Cyan("cloud aws") + "  Inventory AWS KMS keys (server-side via PostQ API)")
+	fmt.Println("  " + ui.Cyan("list") + "       Show recent scans uploaded to your org")
+	fmt.Println("  " + ui.Dim("github     Static analysis of repo for quantum-vulnerable algos (soon)"))
+	fmt.Println("  " + ui.Dim("cloud azure   Key Vault / App Service / Storage scan (soon)"))
+	fmt.Println("  " + ui.Dim("k8s        In-cluster TLS secrets / ingress / mTLS scan (soon)"))
 	fmt.Println()
 	fmt.Println(ui.Bold("EXAMPLES"))
 	fmt.Println("  postq scan url example.com")
 	fmt.Println("  postq scan url a.com b.com c.com --concurrency 5")
 	fmt.Println("  postq scan url example.com --no-upload --json")
+	fmt.Println("  postq scan cloud aws --account 123456789012 --role-arn arn:aws:iam::123456789012:role/PostQScanner")
 	fmt.Println("  postq scan list --limit 10")
 }
 
@@ -545,4 +548,133 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── scan cloud ───────────────────────────────────────────────────────────────
+
+func runScanCloud(args []string, build BuildInfo) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		printScanCloudHelp()
+		return nil
+	}
+	switch args[0] {
+	case "aws":
+		return runScanCloudAWS(args[1:], build)
+	case "azure", "kubernetes", "k8s":
+		return fmt.Errorf("scan cloud %s: not implemented yet (coming soon)", args[0])
+	default:
+		printScanCloudHelp()
+		return fmt.Errorf("unknown cloud provider: %s", args[0])
+	}
+}
+
+func printScanCloudHelp() {
+	fmt.Println(ui.Bold("postq scan cloud") + " — server-side cloud crypto inventory")
+	fmt.Println()
+	fmt.Println(ui.Bold("PROVIDERS"))
+	fmt.Println("  " + ui.Cyan("aws") + "      Inventory KMS keys across regions")
+	fmt.Println("  " + ui.Dim("azure    Key Vault scan (soon)"))
+	fmt.Println("  " + ui.Dim("k8s      In-cluster scan (soon)"))
+	fmt.Println()
+	fmt.Println(ui.Dim("These scans run server-side via the PostQ API, so the CLI never"))
+	fmt.Println(ui.Dim("touches your AWS credentials directly."))
+	fmt.Println()
+	fmt.Println(ui.Bold("EXAMPLES"))
+	fmt.Println("  postq scan cloud aws --account 123456789012")
+	fmt.Println("  postq scan cloud aws --account 123456789012 --regions us-east-1,us-west-2")
+	fmt.Println("  postq scan cloud aws --account 123456789012 \\")
+	fmt.Println("      --role-arn arn:aws:iam::123456789012:role/PostQScanner --external-id postq")
+}
+
+func runScanCloudAWS(args []string, build BuildInfo) error {
+	fs := flag.NewFlagSet("scan cloud aws", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage: postq scan cloud aws --account <id> [flags]
+
+Triggers a server-side AWS KMS scan via the PostQ API. The API uses either
+the role you assume into (--role-arn) or whatever credentials the API host
+already has, so your local AWS credentials never leave this machine.
+
+Exits with code 2 if the scan finds Critical or High risk (CI gate).`)
+		fs.PrintDefaults()
+	}
+	apiKey := fs.String("api-key", "", "Override saved API key")
+	endpoint := fs.String("api-endpoint", "", "Override saved API endpoint")
+	account := fs.String("account", "", "AWS account id (or any label for the scan)")
+	regions := fs.String("regions", "", "Comma-separated list of regions to scan (default: top 9 regions)")
+	roleArn := fs.String("role-arn", "", "IAM role for the API to assume into your account")
+	externalID := fs.String("external-id", "", "External ID for the AssumeRole trust policy")
+	asJSON := fs.Bool("json", false, "Machine-readable JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	target := strings.TrimSpace(*account)
+	if target == "" {
+		fs.Usage()
+		return fmt.Errorf("--account is required")
+	}
+
+	cfg, err := config.Resolve(*endpoint, *apiKey)
+	if err != nil {
+		return err
+	}
+	if cfg.APIKey == "" {
+		return fmt.Errorf("not authenticated — run `postq auth login --api-key …`")
+	}
+
+	req := &apiclient.CloudScanRequest{
+		Provider: "aws",
+		Target:   target,
+	}
+	if *roleArn != "" || *externalID != "" || *regions != "" {
+		req.AWS = &apiclient.CloudScanAWSOptions{
+			RoleArn:    *roleArn,
+			ExternalID: *externalID,
+			Regions:    splitCSV(*regions),
+		}
+	}
+
+	cl := apiclient.New(cfg.APIEndpoint, cfg.APIKey, build.userAgent())
+	fmt.Fprintf(os.Stderr, "%s scanning aws account %s ...\n", ui.Dim("→"), target)
+	resp, err := cl.ScanCloud(context.Background(), req)
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.Data)
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Bold("PostQ cloud scan") + " — " + ui.Cyan("aws/"+resp.Data.Target))
+	fmt.Printf("Mode:         %s\n", resp.Data.Mode)
+	fmt.Printf("Risk score:   %d/100  (%s)\n", resp.Data.RiskScore, ui.RiskBadge(report.RiskLevel(resp.Data.RiskLevel)))
+	fmt.Printf("Resources:    %d\n", resp.Data.ResourcesCount)
+	fmt.Printf("  Vulnerable: %d\n", resp.Data.Summary.QuantumVulnerable)
+	fmt.Printf("  PQ-ready:   %d\n", resp.Data.Summary.PqReady)
+	fmt.Printf("Findings:     %d\n", resp.Data.FindingsCount)
+	fmt.Printf("%s %s\n", ui.Dim("View:"), ui.Blue(resp.Data.URL))
+
+	switch resp.Data.RiskLevel {
+	case "Critical", "High":
+		os.Exit(2) //nolint:revive // intentional CI gate
+	}
+	return nil
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }

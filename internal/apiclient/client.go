@@ -139,3 +139,83 @@ func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", c.userAgent)
 }
+
+// CloudScanRequest is the body for POST /v1/scans/cloud.
+type CloudScanRequest struct {
+	Provider string                 `json:"provider"`           // aws | azure | kubernetes
+	Target   string                 `json:"target"`             // account id / cluster name
+	AWS      *CloudScanAWSOptions   `json:"aws,omitempty"`      // AWS-only options
+}
+
+// CloudScanAWSOptions tunes a server-side AWS scan.
+type CloudScanAWSOptions struct {
+	Regions    []string `json:"regions,omitempty"`
+	RoleArn    string   `json:"roleArn,omitempty"`
+	ExternalID string   `json:"externalId,omitempty"`
+}
+
+// CloudScanResponse is the API's success payload for POST /v1/scans/cloud.
+type CloudScanResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		ID             string `json:"id"`
+		CreatedAt      string `json:"createdAt"`
+		Provider       string `json:"provider"`
+		Target         string `json:"target"`
+		Mode           string `json:"mode"`
+		RiskScore      int    `json:"riskScore"`
+		RiskLevel      string `json:"riskLevel"`
+		FindingsCount  int    `json:"findingsCount"`
+		ResourcesCount int    `json:"resourcesCount"`
+		Summary        struct {
+			TotalEndpoints    int `json:"totalEndpoints"`
+			QuantumVulnerable int `json:"quantumVulnerable"`
+			HybridEnabled     int `json:"hybridEnabled"`
+			PqReady           int `json:"pqReady"`
+		} `json:"summary"`
+		URL string `json:"url"`
+	} `json:"data"`
+	Error string `json:"error,omitempty"`
+}
+
+// ScanCloud POSTs to /v1/scans/cloud asking the API to run a server-side
+// cloud scan and persist findings.
+func (c *Client) ScanCloud(ctx context.Context, req *CloudScanRequest) (*CloudScanResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.endpoint+"/v1/scans/cloud",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(httpReq)
+
+	// Cloud scans can take longer than the default 30s (per-region KMS calls).
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("post /v1/scans/cloud: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var parsed CloudScanResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode >= 400 || !parsed.Success {
+		msg := parsed.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+		}
+		return nil, fmt.Errorf("api error: %s", msg)
+	}
+	return &parsed, nil
+}
