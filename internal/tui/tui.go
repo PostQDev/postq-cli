@@ -1004,6 +1004,14 @@ func renderHelp() string {
 			{"scan code <path>", ui.Cyan("(beta)") + " static crypto-misuse scan"},
 			{"scan list [--limit N]", "recent scans uploaded to your org"},
 		}},
+		{"HYBRID SIGNING", [][2]string{
+			{"keys create --name N", "mint a managed ML-DSA + Ed25519 key"},
+			{"keys list [--include-revoked]", "list signing keys for your org"},
+			{"keys get <id>", "show one key (incl. public key)"},
+			{"keys revoke <id>", "revoke a key (past sigs stay valid)"},
+			{"sign --key ID --in F --out F", "produce a composite signature"},
+			{"verify --key ID --in F --sig F", "verify (exit 2 = CI gate)"},
+		}},
 		{"AUTH", [][2]string{
 			{"login", "paste / enter an API key"},
 			{"logout", "remove saved credentials"},
@@ -1011,7 +1019,7 @@ func renderHelp() string {
 		}},
 		{"SHELL", [][2]string{
 			{"clear", "clear the transcript area"},
-			{"dashboard", "open https://app.postq.dev"},
+			{"dashboard", "open https://postq.dev/dashboard"},
 			{"exit / quit", "leave the shell"},
 		}},
 		{"NAVIGATION", [][2]string{
