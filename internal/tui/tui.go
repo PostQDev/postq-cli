@@ -28,6 +28,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -71,13 +72,24 @@ type shell struct {
 	statusMsg string
 
 	// rotator state
-	mu      sync.Mutex
-	qIdx    int
-	qRow    int // absolute terminal row of the rotating-Q line
-	qCol    int // absolute terminal col where "what's your " starts
+	mu   sync.Mutex
+	qIdx int
+	qRow int // absolute terminal row of the rotating-Q line
+	qCol int // absolute terminal col where "what's your " starts
+
+	// prompt input position inside the inner prompt box
+	promptRow int
+	promptCol int
+	promptMax int
+
 	stopRot chan struct{}
 	rotDone chan struct{}
 }
+
+var (
+	errShellExit  = errors.New("shell exit")
+	errShellClear = errors.New("shell clear")
+)
 
 // Run starts the interactive shell.
 func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
@@ -123,6 +135,10 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 1024), 1024*1024)
+	stdinFile, rawInput := in.(*os.File)
+	if rawInput && !isTTYFile(stdinFile) {
+		rawInput = false
+	}
 
 	for {
 		sh.repaint()
@@ -134,13 +150,28 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 		default:
 		}
 
-		// Read one line. If a resize comes in, we just repaint after Enter
-		// — readline-with-resize-while-blocked needs raw mode which we
-		// avoid for the stdlib-only constraint.
-		line, ok := readLine(scanner)
+		var line string
+		var ok bool
+		var readErr error
+		if rawInput {
+			line, readErr = sh.readCommand(stdinFile)
+			ok = readErr == nil || errors.Is(readErr, errShellClear) || errors.Is(readErr, errShellExit)
+		} else {
+			line, ok = readLine(scanner)
+		}
 		sh.stopRotator()
 		if !ok {
 			return nil
+		}
+		if errors.Is(readErr, errShellExit) {
+			return nil
+		}
+		if errors.Is(readErr, errShellClear) {
+			sh.lastCmd, sh.lastOut, sh.statusMsg = "", "", ""
+			continue
+		}
+		if readErr != nil {
+			return readErr
 		}
 		line = strings.TrimSpace(line)
 
@@ -363,6 +394,12 @@ func (s *shell) repaint() {
 	drawInnerBoxMiddle(s.out, boxW, innerW, promptInner+placeholder, visibleLen(promptInner)+visibleLen(placeholder))
 	promptRow := row
 	promptCol := innerCursorCol(boxW, innerW, visibleLen(promptInner))
+	s.promptRow = promptRow
+	s.promptCol = promptCol
+	s.promptMax = innerW - 2 - visibleLen(promptInner) - 1
+	if s.promptMax < 1 {
+		s.promptMax = 1
+	}
 	row++
 	drawInnerBoxBottom(s.out, boxW, innerW)
 	row++
@@ -385,9 +422,6 @@ func (s *shell) repaint() {
 
 	// Position cursor inside the prompt box, ready for input.
 	moveTo(s.out, promptRow, promptCol)
-	// Erase the placeholder (so when the user types, it doesn't visually
-	// land on top of the dim text).
-	clearLineFromCursor(s.out)
 	showCursor(s.out)
 	flush(s.out)
 }
@@ -458,6 +492,95 @@ func (s *shell) stopRotator() {
 	<-s.rotDone
 	s.stopRot = nil
 	s.rotDone = nil
+}
+
+// readCommand reads a command in raw mode so the terminal does not echo
+// typed characters wherever it wants. Instead, we paint the input string
+// into the inner prompt box ourselves on every keypress.
+func (s *shell) readCommand(f *os.File) (string, error) {
+	state, err := term.MakeRaw(f.Fd())
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = term.Restore(f.Fd(), state) }()
+
+	var input []rune
+	buf := make([]byte, 1)
+	escapeBytesToIgnore := 0
+
+	for {
+		n, err := f.Read(buf)
+		if err != nil {
+			return "", err
+		}
+		if n == 0 {
+			continue
+		}
+
+		b := buf[0]
+		if escapeBytesToIgnore > 0 {
+			escapeBytesToIgnore--
+			continue
+		}
+
+		switch b {
+		case 3: // Ctrl+C
+			return "", errShellExit
+		case 12: // Ctrl+L
+			return "", errShellClear
+		case '\r', '\n':
+			return string(input), nil
+		case 127, 8: // Backspace / Ctrl+H
+			if len(input) > 0 {
+				input = input[:len(input)-1]
+				s.renderPromptInput(string(input))
+			}
+		case 27: // ESC sequence (arrows, etc.) — ignore the common next two bytes.
+			escapeBytesToIgnore = 2
+		default:
+			// ASCII-printable commands are enough for paths/flags/API commands.
+			// UTF-8 can be added later if needed.
+			if b >= 32 && b != 127 {
+				input = append(input, rune(b))
+				s.renderPromptInput(string(input))
+			}
+		}
+	}
+}
+
+func (s *shell) renderPromptInput(input string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renderPromptInputLocked(input)
+}
+
+func (s *shell) renderPromptInputLocked(input string) {
+	if s.promptRow == 0 || s.promptCol == 0 || s.promptMax <= 0 {
+		return
+	}
+	display := input
+	if visibleLen(display) > s.promptMax {
+		display = "…" + rightVisible(input, s.promptMax-1)
+	}
+	vis := visibleLen(display)
+	moveTo(s.out, s.promptRow, s.promptCol)
+	fmt.Fprint(s.out, display)
+	if pad := s.promptMax - vis; pad > 0 {
+		fmt.Fprint(s.out, strings.Repeat(" ", pad))
+	}
+	moveTo(s.out, s.promptRow, s.promptCol+vis)
+	flush(s.out)
+}
+
+func rightVisible(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[len(r)-max:])
 }
 
 // ── content helpers ──────────────────────────────────────────────────────────
@@ -882,6 +1005,17 @@ func readLine(scanner *bufio.Scanner) (string, bool) {
 		return "", false
 	}
 	return scanner.Text(), true
+}
+
+func isTTYFile(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 func openBrowser(url string) {
