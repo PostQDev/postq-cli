@@ -67,9 +67,12 @@ type shell struct {
 	cfg      *config.Config
 
 	// transcript shown above the prompt
-	lastCmd   string
-	lastOut   string
-	statusMsg string
+	lastCmd      string
+	lastOut      string
+	statusMsg    string
+	scrollOffset int // 0 = bottom/latest; positive = lines above bottom
+	scrollMax    int // max scrollOffset for the current transcript/window
+	bodyRows     int // visible rows available for transcript content
 
 	// rotator state
 	mu   sync.Mutex
@@ -168,6 +171,7 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 		}
 		if errors.Is(readErr, errShellClear) {
 			sh.lastCmd, sh.lastOut, sh.statusMsg = "", "", ""
+			sh.scrollOffset = 0
 			continue
 		}
 		if readErr != nil {
@@ -185,15 +189,18 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 			return nil
 		case "clear", "cls":
 			sh.lastCmd, sh.lastOut, sh.statusMsg = "", "", ""
+			sh.scrollOffset = 0
 			continue
 		case "help", "?":
 			sh.lastCmd = line
 			sh.lastOut = renderHelp()
+			sh.scrollOffset = 0
 			continue
 		case "status", "whoami":
 			sh.cfg, _ = config.Load()
 			sh.lastCmd = line
 			sh.lastOut = renderStatus(sh.cfg, build)
+			sh.scrollOffset = 0
 			continue
 		case "logout":
 			if err := config.Delete(); err != nil {
@@ -203,6 +210,7 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 				sh.statusMsg = ui.Green("✓ ") + "credentials removed"
 			}
 			sh.lastCmd, sh.lastOut = "", ""
+			sh.scrollOffset = 0
 			continue
 		case "login":
 			leaveAltScreen(out)
@@ -229,6 +237,7 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 		sh.lastCmd = line
 		captured, err := captureDispatch(sh.dispatch, args)
 		sh.lastOut = captured
+		sh.scrollOffset = 0
 		if err != nil {
 			sh.lastOut += "\n" + ui.Red("✗ ") + err.Error()
 		}
@@ -330,7 +339,7 @@ func (s *shell) repaint() {
 	row++
 
 	// Status block (left-aligned with innerPad).
-	for _, l := range buildStatusLines(s.cfg) {
+	for _, l := range buildStatusLines(s.cfg, s.lastCmd == "") {
 		drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+l, innerPad+visibleLen(l))
 		row++
 	}
@@ -344,26 +353,57 @@ func (s *shell) repaint() {
 	// Body region for transcript fills everything between current row and
 	// the bottom-reserve region.
 	bodyMaxRow := boxH - 1 - bottomReserve // -1 for outer bottom border
+	s.bodyRows = max(0, bodyMaxRow-row)
 	if s.lastCmd != "" {
-		avail := bodyMaxRow - row
+		avail := s.bodyRows
 		if avail > 0 {
 			bodyLines := buildTranscript(s.lastCmd, s.lastOut, boxW-innerPad*2-2)
-			// Keep the most recent N lines.
-			if len(bodyLines) > avail {
-				dropped := len(bodyLines) - avail + 1
-				bodyLines = append(
-					[]string{ui.Dim(fmt.Sprintf("… %d earlier line(s) hidden", dropped))},
-					bodyLines[dropped:]...,
-				)
+			viewRows := avail
+			overflow := len(bodyLines) > viewRows
+			if overflow && viewRows > 1 {
+				viewRows-- // reserve one row for the scroll indicator
 			}
-			for _, l := range bodyLines {
+			if viewRows < 1 {
+				viewRows = 1
+			}
+
+			s.scrollMax = max(0, len(bodyLines)-viewRows)
+			if s.scrollOffset > s.scrollMax {
+				s.scrollOffset = s.scrollMax
+			}
+			if s.scrollOffset < 0 {
+				s.scrollOffset = 0
+			}
+
+			start := s.scrollMax - s.scrollOffset
+			if start < 0 {
+				start = 0
+			}
+			end := min(len(bodyLines), start+viewRows)
+			visible := bodyLines[start:end]
+
+			if overflow {
+				topHidden := start
+				bottomHidden := len(bodyLines) - end
+				indicator := scrollIndicator(topHidden, bottomHidden)
+				drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+indicator, innerPad+visibleLen(indicator))
+				row++
+			}
+
+			for _, l := range visible {
 				drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+l, innerPad+visibleLen(l))
 				row++
 				if row >= bodyMaxRow {
 					break
 				}
 			}
+		} else {
+			s.scrollMax = 0
+			s.scrollOffset = 0
 		}
+	} else {
+		s.scrollMax = 0
+		s.scrollOffset = 0
 	}
 	if s.statusMsg != "" && row < bodyMaxRow {
 		drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+s.statusMsg, innerPad+visibleLen(s.statusMsg))
@@ -407,6 +447,8 @@ func (s *shell) repaint() {
 	// Footer
 	footer := ui.Bold("Ctrl+C") + ui.Dim(" exit  · ") +
 		ui.Bold("Ctrl+L") + ui.Dim(" clear  · ") +
+		ui.Bold("↑/↓") + ui.Dim(" scroll  · ") +
+		ui.Bold("PgUp/PgDn") + ui.Dim(" page  · ") +
 		ui.Bold("?") + ui.Dim(" help")
 	drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+footer, innerPad+visibleLen(footer))
 	row++
@@ -506,7 +548,6 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 
 	var input []rune
 	buf := make([]byte, 1)
-	escapeBytesToIgnore := 0
 
 	for {
 		n, err := f.Read(buf)
@@ -518,10 +559,6 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 		}
 
 		b := buf[0]
-		if escapeBytesToIgnore > 0 {
-			escapeBytesToIgnore--
-			continue
-		}
 
 		switch b {
 		case 3: // Ctrl+C
@@ -535,8 +572,22 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 				input = input[:len(input)-1]
 				s.renderPromptInput(string(input))
 			}
-		case 27: // ESC sequence (arrows, etc.) — ignore the common next two bytes.
-			escapeBytesToIgnore = 2
+		case 27: // ESC sequence (arrows, PageUp/PageDown, Home/End)
+			seq := readEscapeSequence(f)
+			switch seq {
+			case "A": // Up
+				s.scrollBy(1, string(input))
+			case "B": // Down
+				s.scrollBy(-1, string(input))
+			case "5~": // PageUp
+				s.scrollBy(max(1, s.bodyRows-2), string(input))
+			case "6~": // PageDown
+				s.scrollBy(-max(1, s.bodyRows-2), string(input))
+			case "H", "1~": // Home
+				s.scrollToTop(string(input))
+			case "F", "4~": // End
+				s.scrollToBottom(string(input))
+			}
 		default:
 			// ASCII-printable commands are enough for paths/flags/API commands.
 			// UTF-8 can be added later if needed.
@@ -545,6 +596,74 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 				s.renderPromptInput(string(input))
 			}
 		}
+	}
+}
+
+func readEscapeSequence(f *os.File) string {
+	buf := make([]byte, 1)
+	if _, err := f.Read(buf); err != nil {
+		return ""
+	}
+	// CSI sequences are ESC [ ..., SS3 sequences are ESC O ...
+	if buf[0] != '[' && buf[0] != 'O' {
+		return string(buf[0])
+	}
+
+	var seq []byte
+	for i := 0; i < 4; i++ {
+		if _, err := f.Read(buf); err != nil {
+			return string(seq)
+		}
+		seq = append(seq, buf[0])
+		// Arrow/Home/End final bytes are letters; PageUp/Down ends with ~.
+		if (buf[0] >= 'A' && buf[0] <= 'Z') || buf[0] == '~' {
+			break
+		}
+	}
+	return string(seq)
+}
+
+func (s *shell) scrollBy(delta int, input string) {
+	if delta == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.scrollMax == 0 {
+		s.mu.Unlock()
+		return
+	}
+	s.scrollOffset += delta
+	if s.scrollOffset < 0 {
+		s.scrollOffset = 0
+	}
+	if s.scrollOffset > s.scrollMax {
+		s.scrollOffset = s.scrollMax
+	}
+	s.mu.Unlock()
+
+	s.repaint()
+	if input != "" {
+		s.renderPromptInput(input)
+	}
+}
+
+func (s *shell) scrollToTop(input string) {
+	s.mu.Lock()
+	s.scrollOffset = s.scrollMax
+	s.mu.Unlock()
+	s.repaint()
+	if input != "" {
+		s.renderPromptInput(input)
+	}
+}
+
+func (s *shell) scrollToBottom(input string) {
+	s.mu.Lock()
+	s.scrollOffset = 0
+	s.mu.Unlock()
+	s.repaint()
+	if input != "" {
+		s.renderPromptInput(input)
 	}
 }
 
@@ -618,7 +737,7 @@ func (s *shell) fetchRecentPeek() {
 	recentScansCache = strings.Join(lines, "\n")
 }
 
-func buildStatusLines(cfg *config.Config) []string {
+func buildStatusLines(cfg *config.Config, showRecent bool) []string {
 	endpoint := cfg.APIEndpoint
 	if endpoint == "" {
 		endpoint = config.DefaultEndpoint
@@ -631,7 +750,7 @@ func buildStatusLines(cfg *config.Config) []string {
 		keyLine,
 		ui.Blue("●") + " " + ui.Dim("API endpoint  ") + endpoint,
 	}
-	if recentScansCache != "" {
+	if showRecent && recentScansCache != "" {
 		for _, l := range strings.Split(recentScansCache, "\n") {
 			out = append(out, l)
 		}
@@ -691,6 +810,19 @@ func buildTranscript(cmd, output string, maxWidth int) []string {
 	return lines
 }
 
+func scrollIndicator(topHidden, bottomHidden int) string {
+	switch {
+	case topHidden > 0 && bottomHidden > 0:
+		return ui.Dim(fmt.Sprintf("↑ %d earlier · ↓ %d later · PgUp/PgDn scroll · End bottom", topHidden, bottomHidden))
+	case topHidden > 0:
+		return ui.Dim(fmt.Sprintf("↑ %d earlier · PgUp/Home scroll · End bottom", topHidden))
+	case bottomHidden > 0:
+		return ui.Dim(fmt.Sprintf("↓ %d later · PgDn/End scroll", bottomHidden))
+	default:
+		return ui.Dim("↑/↓ scroll · PgUp/PgDn page")
+	}
+}
+
 func softWrap(s string, maxVis int) []string {
 	if visibleLen(s) <= maxVis {
 		return []string{s}
@@ -724,6 +856,20 @@ func softWrap(s string, maxVis int) []string {
 		out = append(out, cur)
 	}
 	return out
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // ── help / status (transcript renderers) ─────────────────────────────────────
