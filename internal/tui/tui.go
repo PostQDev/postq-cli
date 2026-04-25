@@ -122,6 +122,11 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 		sh.fetchRecentPeek()
 	}
 
+	if outFile, ok := out.(*os.File); ok {
+		restoreVT, _ := term.EnableVirtualTerminal(outFile.Fd())
+		defer restoreVT()
+	}
+
 	enterAltScreen(out)
 	defer leaveAltScreen(out)
 	defer showCursor(out)
@@ -403,8 +408,9 @@ func (s *shell) repaint() {
 	footer := ui.Bold("Ctrl+C") + ui.Dim(" exit  · ") +
 		ui.Bold("Ctrl+L") + ui.Dim(" clear  · ") +
 		ui.Bold("↑/↓") + ui.Dim(" history  · ") +
-		ui.Bold("Ctrl+↑/↓") + ui.Dim(" scroll  · ") +
-		ui.Bold("PgUp/PgDn") + ui.Dim(" page  · ") +
+		ui.Bold("⌥↑/↓") + ui.Dim(" scroll  · ") +
+		ui.Bold("Fn↑/↓") + ui.Dim(" page  · ") +
+		ui.Bold("Ctrl+U/D") + ui.Dim(" page  · ") +
 		ui.Bold("?") + ui.Dim(" help")
 	drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+footer, innerPad+visibleLen(footer))
 	row++
@@ -611,8 +617,16 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 		switch b {
 		case 3: // Ctrl+C
 			return "", errShellExit
+		case 2: // Ctrl+B — page up (Emacs-style / macOS-friendly)
+			s.scrollBy(max(1, s.bodyRows-2), string(input))
+		case 4: // Ctrl+D — page down (macOS-friendly scroll alternative)
+			s.scrollBy(-max(1, s.bodyRows-2), string(input))
+		case 6: // Ctrl+F — page down (Emacs-style)
+			s.scrollBy(-max(1, s.bodyRows-2), string(input))
 		case 12: // Ctrl+L
 			return "", errShellClear
+		case 21: // Ctrl+U — page up (vim-style / macOS-friendly)
+			s.scrollBy(max(1, s.bodyRows-2), string(input))
 		case '\r', '\n':
 			return string(input), nil
 		case 127, 8: // Backspace / Ctrl+H
@@ -644,9 +658,13 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 					input = []rune(draft)
 					s.renderPromptInput(string(input))
 				}
-			case "1;5A", "5A": // Ctrl+Up = scroll transcript one page up
+			case "1;2A", "2A", "1;3A", "3A": // Shift/Alt(Option)+Up = scroll one line up
+				s.scrollBy(1, string(input))
+			case "1;2B", "2B", "1;3B", "3B": // Shift/Alt(Option)+Down = scroll one line down
+				s.scrollBy(-1, string(input))
+			case "1;5A", "5A": // Ctrl+Up (if terminal receives it) = page up
 				s.scrollBy(max(1, s.bodyRows-2), string(input))
-			case "1;5B", "5B": // Ctrl+Down = scroll transcript one page down
+			case "1;5B", "5B": // Ctrl+Down (if terminal receives it) = page down
 				s.scrollBy(-max(1, s.bodyRows-2), string(input))
 			case "5~": // PageUp
 				s.scrollBy(max(1, s.bodyRows-2), string(input))
@@ -896,13 +914,13 @@ func buildTranscript(cmd, output string, maxWidth int) []string {
 func scrollIndicator(topHidden, bottomHidden int) string {
 	switch {
 	case topHidden > 0 && bottomHidden > 0:
-		return ui.Dim(fmt.Sprintf("Ctrl+↑ %d earlier · Ctrl+↓ %d later · PgUp/PgDn page · End bottom", topHidden, bottomHidden))
+		return ui.Dim(fmt.Sprintf("⌥↑ %d earlier · ⌥↓ %d later · Fn↑/↓ page · Ctrl+U/D page", topHidden, bottomHidden))
 	case topHidden > 0:
-		return ui.Dim(fmt.Sprintf("Ctrl+↑ %d earlier · PgUp/Home top · End bottom", topHidden))
+		return ui.Dim(fmt.Sprintf("⌥↑ %d earlier · Fn↑/Home top · End bottom", topHidden))
 	case bottomHidden > 0:
-		return ui.Dim(fmt.Sprintf("Ctrl+↓ %d later · PgDn/End bottom", bottomHidden))
+		return ui.Dim(fmt.Sprintf("⌥↓ %d later · Fn↓/End bottom", bottomHidden))
 	default:
-		return ui.Dim("Ctrl+↑/↓ scroll · PgUp/PgDn page")
+		return ui.Dim("⌥↑/↓ scroll · Fn↑/↓ page · Ctrl+U/D page")
 	}
 }
 
@@ -993,6 +1011,13 @@ func renderHelp() string {
 			{"clear", "clear the transcript area"},
 			{"dashboard", "open https://app.postq.dev"},
 			{"exit / quit", "leave the shell"},
+		}},
+		{"NAVIGATION", [][2]string{
+			{"↑ / ↓", "previous / next command"},
+			{"⌥↑ / ⌥↓", "scroll output one line (Alt/Option)"},
+			{"Fn↑ / Fn↓", "page output up / down (PageUp/PageDown)"},
+			{"Ctrl+U / Ctrl+D", "page output up / down"},
+			{"Home / End", "jump output top / bottom"},
 		}},
 	}
 	var b strings.Builder
