@@ -193,7 +193,7 @@ func printRootHelp() {
 	fmt.Println("  postq sign --key <id> --in artifact.tar.gz --out artifact.sig")
 	fmt.Println("  postq verify --key <id> --in artifact.tar.gz --sig artifact.sig")
 	fmt.Println()
-	fmt.Println(ui.Dim("Generate an API key at https://app.postq.dev/settings/api-keys"))
+	fmt.Println(ui.Dim("Generate an API key at https://postq.dev/settings/api-keys"))
 }
 
 func printVersion(b BuildInfo) {
@@ -250,7 +250,7 @@ func runAuthLogin(args []string) error {
 		return err
 	}
 	if *apiKey == "" {
-		return fmt.Errorf("--api-key is required (generate one at https://app.postq.dev/settings/api-keys)")
+		return fmt.Errorf("--api-key is required (generate one at https://postq.dev/settings/api-keys)")
 	}
 	if !strings.HasPrefix(*apiKey, "pq_live_") && !strings.HasPrefix(*apiKey, "pq_test_") {
 		fmt.Fprintln(os.Stderr, ui.Yellow("warning:")+" key does not look like a PostQ key (expected pq_live_… or pq_test_…)")

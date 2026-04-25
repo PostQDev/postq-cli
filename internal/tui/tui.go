@@ -231,14 +231,22 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 			enterAltScreen(out)
 			continue
 		case "open dashboard", "dashboard":
-			openBrowser("https://app.postq.dev")
-			sh.statusMsg = ui.Dim("→ opened https://app.postq.dev in browser")
+			openBrowser("https://postq.dev/dashboard")
+			sh.statusMsg = ui.Dim("→ opened https://postq.dev/dashboard in browser")
 			continue
 		}
 
 		args := tokenize(line)
 		if len(args) == 0 {
 			continue
+		}
+		// Strip a leading "postq" so muscle-memory works inside the shell.
+		if args[0] == "postq" {
+			args = args[1:]
+			if len(args) == 0 {
+				sh.statusMsg = ui.Dim("(no command — try `help`)")
+				continue
+			}
 		}
 		if args[0] == "shell" || args[0] == "interactive" {
 			sh.statusMsg = ui.Dim("(already in interactive shell)")
@@ -1039,7 +1047,7 @@ func runOnboarding(out io.Writer, scanner *bufio.Scanner) bool {
 	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("Connect this CLI to your org so scans land in your")+"           "+ui.Purple("│"))
 	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("dashboard. You can skip — local scans still print here.")+"      "+ui.Purple("│"))
 	fmt.Fprintln(out, ui.Purple("  │")+strings.Repeat(" ", 62)+ui.Purple("│"))
-	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("1. open ")+ui.Cyan("https://app.postq.dev/settings/api-keys")+"            "+ui.Purple("│"))
+	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("1. open ")+ui.Cyan("https://postq.dev/settings/api-keys")+"                "+ui.Purple("│"))
 	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("2. create a key starting with ")+ui.Cyan("pq_live_…")+"                    "+ui.Purple("│"))
 	fmt.Fprintln(out, ui.Purple("  │ ")+ui.Dim("3. paste it below")+strings.Repeat(" ", 45)+ui.Purple("│"))
 	fmt.Fprintln(out, ui.Purple("  └──────────────────────────────────────────────────────────────┘"))
@@ -1048,7 +1056,7 @@ func runOnboarding(out io.Writer, scanner *bufio.Scanner) bool {
 	if scanner.Scan() {
 		ans := strings.TrimSpace(strings.ToLower(scanner.Text()))
 		if ans == "" || ans == "y" || ans == "yes" {
-			openBrowser("https://app.postq.dev/settings/api-keys")
+			openBrowser("https://postq.dev/settings/api-keys")
 			fmt.Fprintln(out, ui.Dim("  → opened in browser"))
 		}
 	}

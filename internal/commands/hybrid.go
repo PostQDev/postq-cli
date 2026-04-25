@@ -6,9 +6,10 @@
 // constraint (no Go ML-DSA implementation needed in the binary).
 //
 // Exit codes:
-//   0  success
-//   1  unexpected error
-//   2  verify failed (signature did not validate) — use as a CI gate
+//
+//	0  success
+//	1  unexpected error
+//	2  verify failed (signature did not validate) — use as a CI gate
 package commands
 
 import (
