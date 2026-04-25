@@ -59,7 +59,7 @@ func Scan(target string, opts Options) (*Result, error) {
 		net.JoinHostPort(host, port),
 		&tls.Config{
 			ServerName:         host,
-			MinVersion:         tls.VersionTLS10, // probe for legacy support
+			MinVersion:         tls.VersionTLS10,        // probe for legacy support
 			InsecureSkipVerify: opts.InsecureSkipVerify, //nolint:gosec // user-controlled debugging flag
 		},
 	)

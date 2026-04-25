@@ -1,12 +1,35 @@
 # PostQ CLI
 
-A single Go binary for running [PostQ](https://postq.dev) quantum-risk scans from your laptop, CI pipeline, Kubernetes CronJob, AWS Lambda, or Azure Container Instance.
+A single Go binary for running [PostQ](https://postq.dev) cryptographic-posture scans from your laptop, CI pipeline, Kubernetes CronJob, AWS Lambda, or Azure Container Instance.
+
+Run it with no arguments and you drop into an interactive shell:
 
 ```
-postq auth login --api-key pq_live_…
+postq
+```
+
+```
+  ██████╗  ██████╗ ███████╗████████╗   ▄▄▄▄▄
+  ██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝  █     █
+  ██████╔╝██║   ██║███████╗   ██║     █  ◆  █
+  ██╔═══╝ ██║   ██║╚════██║   ██║     █     █
+  ██║     ╚██████╔╝███████║   ██║      ▀▀█▄▀
+  ╚═╝      ╚═════╝ ╚══════╝   ╚═╝         ▀▀
+
+  cryptographic posture for whatever Q-Day comes next
+  what's your [Quantum]?
+
+  postq  ›
+```
+
+The first launch walks you through pasting an API key and saves it to `~/.postq/config.json` (mode 0600). After that, type `help` for the command palette.
+
+Or use the same commands one-shot from your shell:
+
+```
 postq scan url example.com
 postq scan url a.com b.com c.com --concurrency 5
-postq scan url example.com --no-upload --json
+postq scan code ./             # NEW — local crypto-misuse scan (beta)
 postq scan cloud aws --account 123456789012 --role-arn arn:aws:iam::123456789012:role/PostQScanner
 postq scan list --limit 10
 ```

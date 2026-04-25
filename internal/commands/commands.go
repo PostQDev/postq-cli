@@ -15,7 +15,9 @@ import (
 	"github.com/postqdev/postq-cli/internal/apiclient"
 	"github.com/postqdev/postq-cli/internal/config"
 	"github.com/postqdev/postq-cli/internal/report"
+	"github.com/postqdev/postq-cli/internal/scancode"
 	"github.com/postqdev/postq-cli/internal/scanurl"
+	"github.com/postqdev/postq-cli/internal/tui"
 	"github.com/postqdev/postq-cli/internal/ui"
 )
 
@@ -30,11 +32,58 @@ func (b BuildInfo) userAgent() string {
 	return "postq-cli/" + b.Version
 }
 
+// interactive is true while we're running inside the TUI shell. Lets
+// long-running scan commands skip os.Exit so a Critical finding doesn't
+// kill the whole REPL session.
+var interactive bool
+
+// exitOrReturn calls os.Exit(code) in batch mode, or just returns in
+// interactive shell mode.
+func exitOrReturn(code int) {
+	if interactive {
+		return
+	}
+	os.Exit(code) //nolint:revive // intentional CI gate
+}
+
+// runShell launches the TUI, wiring it back into the existing dispatcher.
+func runShell(build BuildInfo) error {
+	interactive = true
+	defer func() { interactive = false }()
+	return tui.Run(os.Stdin, os.Stdout, tui.Build{
+		Version: build.Version,
+		Commit:  build.Commit,
+		Date:    build.Date,
+	}, func(args []string) error {
+		switch args[0] {
+		case "auth":
+			return runAuth(args[1:])
+		case "scan":
+			return runScan(args[1:], build)
+		case "config":
+			return runConfig(args[1:])
+		case "version":
+			printVersion(build)
+			return nil
+		default:
+			return fmt.Errorf("unknown command: %s (try `help`)", args[0])
+		}
+	})
+}
+
 // Run dispatches to the appropriate subcommand.
 func Run(args []string, build BuildInfo) error {
 	args = stripNoColor(args)
 
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
+	// `postq` with no args (and a TTY) launches the interactive shell.
+	if len(args) == 0 {
+		if isInteractive() {
+			return runShell(build)
+		}
+		printRootHelp()
+		return nil
+	}
+	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		printRootHelp()
 		return nil
 	}
@@ -44,6 +93,8 @@ func Run(args []string, build BuildInfo) error {
 	}
 
 	switch args[0] {
+	case "shell", "interactive", "repl":
+		return runShell(build)
 	case "auth":
 		return runAuth(args[1:])
 	case "scan":
@@ -54,6 +105,21 @@ func Run(args []string, build BuildInfo) error {
 		printRootHelp()
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+func isInteractive() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	if (fi.Mode() & os.ModeCharDevice) == 0 {
+		return false // piped/redirected
+	}
+	fo, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return (fo.Mode() & os.ModeCharDevice) != 0
 }
 
 func stripNoColor(args []string) []string {
@@ -242,7 +308,9 @@ func runScan(args []string, build BuildInfo) error {
 		return runScanList(args[1:], build)
 	case "cloud":
 		return runScanCloud(args[1:], build)
-	case "github", "azure", "k8s", "kubernetes", "bulk":
+	case "code":
+		return runScanCode(args[1:], build)
+	case "github", "azure", "k8s", "kubernetes", "bulk", "iac", "deps":
 		return fmt.Errorf("scan %s: not implemented yet (coming soon)", args[0])
 	default:
 		printScanHelp()
@@ -256,8 +324,11 @@ func printScanHelp() {
 	fmt.Println(ui.Bold("SUBCOMMANDS"))
 	fmt.Println("  " + ui.Cyan("url") + "        TLS handshake + cert quantum-risk scan")
 	fmt.Println("  " + ui.Cyan("cloud aws") + "  Inventory AWS KMS keys (server-side via PostQ API)")
+	fmt.Println("  " + ui.Cyan("code") + "       " + ui.Yellow("(beta)") + " Static crypto-misuse scan on a local repo")
 	fmt.Println("  " + ui.Cyan("list") + "       Show recent scans uploaded to your org")
-	fmt.Println("  " + ui.Dim("github     Static analysis of repo for quantum-vulnerable algos (soon)"))
+	fmt.Println("  " + ui.Dim("iac        Terraform / Bicep / Helm crypto-config scan (soon)"))
+	fmt.Println("  " + ui.Dim("deps       Lockfile + manifest crypto-library audit (soon)"))
+	fmt.Println("  " + ui.Dim("github     Repo-wide static analysis (soon)"))
 	fmt.Println("  " + ui.Dim("cloud azure   Key Vault / App Service / Storage scan (soon)"))
 	fmt.Println("  " + ui.Dim("k8s        In-cluster TLS secrets / ingress / mTLS scan (soon)"))
 	fmt.Println()
@@ -411,7 +482,7 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 		}
 	}
 	if worst == report.RiskCritical || worst == report.RiskHigh {
-		os.Exit(2) //nolint:revive // intentional CI gate
+		exitOrReturn(2)
 	}
 	return nil
 }
@@ -660,7 +731,7 @@ Exits with code 2 if the scan finds Critical or High risk (CI gate).`)
 
 	switch resp.Data.RiskLevel {
 	case "Critical", "High":
-		os.Exit(2) //nolint:revive // intentional CI gate
+		exitOrReturn(2)
 	}
 	return nil
 }
@@ -677,4 +748,120 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// ── scan code ────────────────────────────────────────────────────────────────
+
+func runScanCode(args []string, build BuildInfo) error {
+	fs := flag.NewFlagSet("scan code", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage: postq scan code <path> [flags]
+
+Walks the given directory and runs PostQ's crypto-misuse rule pack
+(weak RNG, MD5/SHA-1 in signing paths, JWT alg:none, AES-ECB,
+hardcoded private keys, classical-only signing, ...) over source files.
+
+This is a beta detector pack — high-signal, not exhaustive.`)
+		fs.PrintDefaults()
+	}
+	asJSON := fs.Bool("json", false, "Machine-readable JSON output")
+	maxBytes := fs.Int64("max-file-size", 1<<20, "Skip files larger than this many bytes")
+	severity := fs.String("min-severity", "low", "Minimum severity to print (info|low|medium|high|critical)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fs.Usage()
+		return fmt.Errorf("path is required (try `postq scan code .`)")
+	}
+	root := rest[0]
+
+	res, err := scancode.Run(root, scancode.Options{MaxFileBytes: *maxBytes})
+	if err != nil {
+		return err
+	}
+
+	minSev := sevRank(*severity)
+	filtered := make([]scancode.Finding, 0, len(res.Findings))
+	for _, f := range res.Findings {
+		if sevRank(string(f.Severity)) >= minSev {
+			filtered = append(filtered, f)
+		}
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
+			"root":         res.Root,
+			"filesScanned": res.FilesScanned,
+			"riskScore":    res.RiskScore,
+			"riskLevel":    res.RiskLevel,
+			"findings":     filtered,
+			"agent":        report.Agent{Name: "postq-cli", Version: build.Version, OS: runtime.GOOS},
+		})
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Bold("PostQ code scan") + " — " + ui.Cyan(res.Root))
+	fmt.Printf("Files scanned: %d\n", res.FilesScanned)
+	fmt.Printf("Risk score:    %d/100  (%s)\n", res.RiskScore, ui.RiskBadge(res.RiskLevel))
+	fmt.Printf("Findings:      %d", len(filtered))
+	if len(filtered) != len(res.Findings) {
+		fmt.Printf("  %s", ui.Dim(fmt.Sprintf("(%d hidden by --min-severity)", len(res.Findings)-len(filtered))))
+	}
+	fmt.Println()
+	fmt.Println()
+
+	if len(filtered) == 0 {
+		fmt.Println(ui.Green("  ✓ ") + "no detections in scope")
+		fmt.Println()
+		return nil
+	}
+
+	for _, f := range filtered {
+		fmt.Printf("%s %s %s\n",
+			ui.SeverityBadge(f.Severity),
+			ui.Bold(f.Title),
+			ui.Dim("· "+f.RuleID),
+		)
+		fmt.Printf("    %s\n", f.Description)
+		fmt.Printf("    %s %s\n", ui.Dim("at:  "), ui.Cyan(f.File)+ui.Dim(":")+fmt.Sprint(f.Line))
+		if f.Snippet != "" {
+			fmt.Printf("    %s %s\n", ui.Dim("code:"), trimSnippet(f.Snippet))
+		}
+		if f.DiscoveredBy != "" {
+			fmt.Printf("    %s %s\n", ui.Dim("via: "), ui.Purple(f.DiscoveredBy))
+		}
+		fmt.Printf("    %s %s\n\n", ui.Dim("fix: "), f.Remediation)
+	}
+
+	if res.RiskLevel == report.RiskCritical || res.RiskLevel == report.RiskHigh {
+		exitOrReturn(2)
+	}
+	return nil
+}
+
+func trimSnippet(s string) string {
+	if len(s) > 120 {
+		return s[:117] + "..."
+	}
+	return s
+}
+
+func sevRank(s string) int {
+	switch strings.ToLower(s) {
+	case "critical":
+		return 4
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	case "low":
+		return 1
+	case "info":
+		return 0
+	}
+	return 1
 }

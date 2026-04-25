@@ -104,3 +104,9 @@ func RiskBadge(rl report.RiskLevel) string {
 		return s
 	}
 }
+
+// RiskBadgeStr is the same as RiskBadge but accepts a plain string (used by
+// the TUI which receives risk levels as strings from the API).
+func RiskBadgeStr(s string) string {
+	return RiskBadge(report.RiskLevel(s))
+}

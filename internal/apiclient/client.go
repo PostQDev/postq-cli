@@ -142,9 +142,9 @@ func (c *Client) setHeaders(req *http.Request) {
 
 // CloudScanRequest is the body for POST /v1/scans/cloud.
 type CloudScanRequest struct {
-	Provider string                 `json:"provider"`           // aws | azure | kubernetes
-	Target   string                 `json:"target"`             // account id / cluster name
-	AWS      *CloudScanAWSOptions   `json:"aws,omitempty"`      // AWS-only options
+	Provider string               `json:"provider"`      // aws | azure | kubernetes
+	Target   string               `json:"target"`        // account id / cluster name
+	AWS      *CloudScanAWSOptions `json:"aws,omitempty"` // AWS-only options
 }
 
 // CloudScanAWSOptions tunes a server-side AWS scan.
