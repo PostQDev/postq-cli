@@ -62,6 +62,12 @@ func runShell(build BuildInfo) error {
 			return runScan(args[1:], build)
 		case "config":
 			return runConfig(args[1:])
+		case "sign":
+			return runSign(args[1:], build)
+		case "verify":
+			return runVerify(args[1:], build)
+		case "keys":
+			return runKeys(args[1:], build)
 		case "version":
 			printVersion(build)
 			return nil
@@ -101,6 +107,12 @@ func Run(args []string, build BuildInfo) error {
 		return runScan(args[1:], build)
 	case "config":
 		return runConfig(args[1:])
+	case "sign":
+		return runSign(args[1:], build)
+	case "verify":
+		return runVerify(args[1:], build)
+	case "keys":
+		return runKeys(args[1:], build)
 	default:
 		printRootHelp()
 		return fmt.Errorf("unknown command: %s", args[0])
@@ -150,6 +162,9 @@ func printRootHelp() {
 	fmt.Println("  " + ui.Cyan("scan code") + " <path>       Static crypto-misuse scan (beta)")
 	fmt.Println("  " + ui.Cyan("scan cloud aws") + "          Server-side AWS KMS inventory")
 	fmt.Println("  " + ui.Cyan("scan list") + "              Recent scans uploaded to your org")
+	fmt.Println("  " + ui.Cyan("sign") + "                   Sign a payload with a managed hybrid key")
+	fmt.Println("  " + ui.Cyan("verify") + "                 Verify a composite hybrid signature")
+	fmt.Println("  " + ui.Cyan("keys") + "                   Manage hybrid (PQ + classical) signing keys")
 	fmt.Println("  " + ui.Cyan("auth login") + "             Save API key for uploads")
 	fmt.Println("  " + ui.Cyan("auth whoami") + "            Show active credentials (masked)")
 	fmt.Println("  " + ui.Cyan("auth logout") + "            Forget saved credentials")
@@ -174,6 +189,9 @@ func printRootHelp() {
 	fmt.Println("  postq scan url example.com api.example.com --json")
 	fmt.Println("  postq scan url example.com --no-upload")
 	fmt.Println("  postq scan list --limit 20")
+	fmt.Println("  postq keys create --name release-signing")
+	fmt.Println("  postq sign --key <id> --in artifact.tar.gz --out artifact.sig")
+	fmt.Println("  postq verify --key <id> --in artifact.tar.gz --sig artifact.sig")
 	fmt.Println()
 	fmt.Println(ui.Dim("Generate an API key at https://app.postq.dev/settings/api-keys"))
 }

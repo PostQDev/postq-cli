@@ -94,6 +94,10 @@ postq <command> [subcommand] [flags] [args]
   scan url <host>...        TLS handshake + cert quantum-risk scan
   scan cloud aws            Scan AWS KMS keys for quantum-vulnerable algorithms
   scan list                 Recent scans uploaded to your org
+  sign                      Sign a payload with a hybrid PQ key
+  verify                    Verify a hybrid PQ signature (exit 2 on failure)
+  keys {create|list|get|revoke}
+                            Manage hybrid signing keys
   auth login                Save API key for uploads
   auth whoami               Show active credentials (masked)
   auth logout               Forget saved credentials
@@ -130,7 +134,7 @@ The `scan cloud aws` subcommand uses your local AWS credentials (env vars, `~/.a
 |------|------------------------------------------------------------------|
 | 0    | Success — no Critical or High risk findings                      |
 | 1    | Error (network, auth, unknown command, etc.)                     |
-| 2    | Scan completed but found Critical or High risk (CI gate)         |
+| 2    | Scan found Critical/High risk, OR `postq verify` rejected a signature (CI gate) |
 
 Use this in CI:
 
