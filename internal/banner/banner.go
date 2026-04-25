@@ -1,19 +1,17 @@
 // Package banner renders the animated PostQ logo + intro card shown at
-// startup of the interactive shell.
+// the top of the interactive shell.
 package banner
 
 import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
-	"time"
 
 	"github.com/postqdev/postq-cli/internal/ui"
 )
 
-// Q-as-variable: the bracketed word rotates on startup.
-var qWords = []string{
+// QWords is the rotating list of "Q-as-variable" words.
+var QWords = []string{
 	"Quantum",
 	"AI",
 	"Q-Day",
@@ -22,8 +20,18 @@ var qWords = []string{
 	"Query",
 }
 
-// PostQ block-letter logo. Each line is one row of glyphs.
-// Reads "Post[ Q ]" with the Q drawn as part of the block letters.
+// MaxQWordLen is the longest QWord — used to pre-size the rotator slot
+// so the layout doesn't shift as words change.
+var MaxQWordLen = func() int {
+	n := 0
+	for _, q := range QWords {
+		if len(q) > n {
+			n = len(q)
+		}
+	}
+	return n
+}()
+
 var logoLines = []string{
 	"██████╗  ██████╗ ███████╗████████╗   ▄▄▄▄▄  ",
 	"██╔══██╗██╔═══██╗██╔════╝╚══██╔══╝  █     █ ",
@@ -33,85 +41,89 @@ var logoLines = []string{
 	"╚═╝      ╚═════╝ ╚══════╝   ╚═╝         ▀▀  ",
 }
 
-// Print renders the full banner with optional animation. Pass animate=false
-// for non-TTY/CI use.
-func Print(w io.Writer, version string, animate bool) {
+// Layout positions returned by Print so callers know which absolute row
+// the rotating-Q line is on (for in-place updates) and where the body
+// region starts.
+type Layout struct {
+	QRow    int
+	BodyRow int
+}
+
+var logoColors = []string{
+	"\x1b[38;5;141m",
+	"\x1b[38;5;135m",
+	"\x1b[38;5;99m",
+	"\x1b[38;5;105m",
+	"\x1b[38;5;111m",
+	"\x1b[38;5;117m",
+}
+
+const reset = "\x1b[0m"
+
+// Print renders the banner at the current cursor position. Caller should
+// have homed the cursor first (\x1b[H). statusLines are inserted between
+// the rule lines beneath the logo (e.g. auth status, recent scans).
+func Print(w io.Writer, version string, statusLines []string) Layout {
 	if w == nil {
 		w = os.Stdout
 	}
-	colors := []string{
-		"\x1b[38;5;141m", // soft purple
-		"\x1b[38;5;135m",
-		"\x1b[38;5;99m",
-		"\x1b[38;5;105m",
-		"\x1b[38;5;111m",
-		"\x1b[38;5;117m", // soft cyan
-	}
-	reset := "\x1b[0m"
 
+	row := 1
 	fmt.Fprintln(w)
+	row++
+
 	for i, line := range logoLines {
 		if ui.Enabled() {
-			fmt.Fprintln(w, "  "+colors[i%len(colors)]+line+reset)
+			fmt.Fprintln(w, "  "+logoColors[i%len(logoColors)]+line+reset)
 		} else {
 			fmt.Fprintln(w, "  "+line)
 		}
+		row++
 	}
 	fmt.Fprintln(w)
+	row++
 
-	tagline := "  cryptographic posture for whatever Q-Day comes next"
-	fmt.Fprintln(w, ui.Dim(tagline))
+	fmt.Fprintln(w, ui.Dim("  cryptographic posture for whatever Q-Day comes next"))
+	row++
 
-	// Rotating word line: "  what's your [_____]?"
-	if animate && ui.Enabled() && isTTY(w) {
-		animateRotator(w)
-	} else {
-		fmt.Fprintln(w, "  what's your "+ui.Bold("[")+ui.Cyan(qWords[0])+ui.Bold("]")+"?")
-	}
+	qRow := row
+	RenderQLine(w, 0)
+	fmt.Fprintln(w)
+	row++
 
 	fmt.Fprintln(w)
+	row++
+
+	fmt.Fprintln(w, ui.Dim("  ──────────────────────────────────────────────────────────────"))
+	row++
+
+	for _, l := range statusLines {
+		fmt.Fprintln(w, l)
+		row++
+	}
 	fmt.Fprintln(w, ui.Dim("  v"+version+"  ·  type ")+ui.Cyan("help")+ui.Dim(" for commands  ·  ")+ui.Cyan("exit")+ui.Dim(" to quit"))
+	row++
+
+	fmt.Fprintln(w, ui.Dim("  ──────────────────────────────────────────────────────────────"))
+	row++
 	fmt.Fprintln(w)
+	row++
+
+	return Layout{QRow: qRow, BodyRow: row}
 }
 
-// animateRotator briefly cycles the bracketed word on a single redrawn line.
-func animateRotator(w io.Writer) {
-	prefix := "  what's your "
-	suffix := "?"
-	// width of the longest word so we can pad cleanly during redraws
-	pad := 0
-	for _, q := range qWords {
-		if len(q) > pad {
-			pad = len(q)
-		}
+// RenderQLine writes just the rotating-Q line at the current cursor
+// position, padded so the trailing "?" stays in the same column across
+// words of different length.
+func RenderQLine(w io.Writer, idx int) {
+	idx = ((idx % len(QWords)) + len(QWords)) % len(QWords)
+	q := QWords[idx]
+	pad := MaxQWordLen - len(q)
+	if pad < 0 {
+		pad = 0
 	}
-	for i, q := range qWords {
-		// build line
-		bracketed := ui.Bold("[") + ui.Cyan(q) + ui.Bold("]")
-		filler := strings.Repeat(" ", pad-len(q))
-		line := "\r" + prefix + bracketed + suffix + filler
-		fmt.Fprint(w, line)
-		// Faster as we go, then slow on the final word.
-		switch {
-		case i == len(qWords)-1:
-			// final - hold
-		case i == 0:
-			time.Sleep(140 * time.Millisecond)
-		default:
-			time.Sleep(110 * time.Millisecond)
-		}
+	fmt.Fprint(w, "  what's your ", ui.Bold("["), ui.Cyan(q), ui.Bold("]"), "?")
+	for i := 0; i < pad; i++ {
+		fmt.Fprint(w, " ")
 	}
-	fmt.Fprintln(w)
-}
-
-func isTTY(w io.Writer) bool {
-	f, ok := w.(*os.File)
-	if !ok {
-		return false
-	}
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (fi.Mode() & os.ModeCharDevice) != 0
 }
