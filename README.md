@@ -54,6 +54,14 @@ go install github.com/postqdev/postq-cli/cmd/postq@latest
 
 Download from the [latest release](https://github.com/PostQDev/postq-cli/releases/latest), extract, and put `postq` (or `postq.exe`) on your `PATH`.
 
+After any install method, start the interactive CLI:
+
+```bash
+postq
+```
+
+First launch asks for your API key, saves it to `~/.postq/config.json`, and then drops you into the boxed PostQ shell.
+
 | Platform            | Asset                                   |
 |---------------------|-----------------------------------------|
 | macOS Apple Silicon | `postq_<v>_darwin_arm64.tar.gz`         |
@@ -66,13 +74,16 @@ Download from the [latest release](https://github.com/PostQDev/postq-cli/release
 ## Quick start
 
 ```bash
-# 1. Generate an API key at https://app.postq.dev/settings/api-keys
-postq auth login --api-key pq_live_xxxxxxxxxxxxxxxxxxxxxxxx
+# 1. Install
+brew install PostQDev/tap/postq
 
-# 2. Scan something
-postq scan url example.com
+# 2. Start PostQ — first launch prompts for your API key
+postq
 
-# 3. Open the URL printed at the bottom to view findings in the portal
+# 3. In the interactive shell, run a scan
+scan url example.com
+
+# 4. Open the URL printed at the bottom to view findings in the portal
 ```
 
 ## Commands
