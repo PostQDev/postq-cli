@@ -73,6 +73,11 @@ type shell struct {
 	scrollOffset int // 0 = bottom/latest; positive = lines above bottom
 	scrollMax    int // max scrollOffset for the current transcript/window
 	bodyRows     int // visible rows available for transcript content
+	bodyStartRow int // first absolute terminal row of transcript viewport
+	boxW         int // latest terminal width for partial body repaints
+
+	// command history for this interactive session
+	history []string
 
 	// rotator state
 	mu   sync.Mutex
@@ -183,6 +188,7 @@ func Run(in io.Reader, out io.Writer, build Build, dispatch Dispatch) error {
 		if line == "" {
 			continue
 		}
+		sh.addHistory(line)
 
 		switch line {
 		case "exit", "quit", ":q":
@@ -267,6 +273,7 @@ func (s *shell) repaint() {
 	// Outer box spans the whole terminal.
 	boxW := cols
 	boxH := rows
+	s.boxW = boxW
 
 	// Clear & home.
 	hideCursor(s.out)
@@ -353,62 +360,10 @@ func (s *shell) repaint() {
 	// Body region for transcript fills everything between current row and
 	// the bottom-reserve region.
 	bodyMaxRow := boxH - 1 - bottomReserve // -1 for outer bottom border
+	s.bodyStartRow = row
 	s.bodyRows = max(0, bodyMaxRow-row)
-	if s.lastCmd != "" {
-		avail := s.bodyRows
-		if avail > 0 {
-			bodyLines := buildTranscript(s.lastCmd, s.lastOut, boxW-innerPad*2-2)
-			viewRows := avail
-			overflow := len(bodyLines) > viewRows
-			if overflow && viewRows > 1 {
-				viewRows-- // reserve one row for the scroll indicator
-			}
-			if viewRows < 1 {
-				viewRows = 1
-			}
-
-			s.scrollMax = max(0, len(bodyLines)-viewRows)
-			if s.scrollOffset > s.scrollMax {
-				s.scrollOffset = s.scrollMax
-			}
-			if s.scrollOffset < 0 {
-				s.scrollOffset = 0
-			}
-
-			start := s.scrollMax - s.scrollOffset
-			if start < 0 {
-				start = 0
-			}
-			end := min(len(bodyLines), start+viewRows)
-			visible := bodyLines[start:end]
-
-			if overflow {
-				topHidden := start
-				bottomHidden := len(bodyLines) - end
-				indicator := scrollIndicator(topHidden, bottomHidden)
-				drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+indicator, innerPad+visibleLen(indicator))
-				row++
-			}
-
-			for _, l := range visible {
-				drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+l, innerPad+visibleLen(l))
-				row++
-				if row >= bodyMaxRow {
-					break
-				}
-			}
-		} else {
-			s.scrollMax = 0
-			s.scrollOffset = 0
-		}
-	} else {
-		s.scrollMax = 0
-		s.scrollOffset = 0
-	}
-	if s.statusMsg != "" && row < bodyMaxRow {
-		drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+s.statusMsg, innerPad+visibleLen(s.statusMsg))
-		row++
-	}
+	s.renderTranscriptViewportLocked(false)
+	row += s.bodyRows
 
 	// Pad blank lines until we hit the bottom-reserve region.
 	for row < boxH-1-bottomReserve {
@@ -447,7 +402,8 @@ func (s *shell) repaint() {
 	// Footer
 	footer := ui.Bold("Ctrl+C") + ui.Dim(" exit  · ") +
 		ui.Bold("Ctrl+L") + ui.Dim(" clear  · ") +
-		ui.Bold("↑/↓") + ui.Dim(" scroll  · ") +
+		ui.Bold("↑/↓") + ui.Dim(" history  · ") +
+		ui.Bold("Ctrl+↑/↓") + ui.Dim(" scroll  · ") +
 		ui.Bold("PgUp/PgDn") + ui.Dim(" page  · ") +
 		ui.Bold("?") + ui.Dim(" help")
 	drawContentLine(s.out, boxW, strings.Repeat(" ", innerPad)+footer, innerPad+visibleLen(footer))
@@ -536,6 +492,96 @@ func (s *shell) stopRotator() {
 	s.rotDone = nil
 }
 
+func (s *shell) addHistory(cmd string) {
+	if cmd == "" {
+		return
+	}
+	if len(s.history) > 0 && s.history[len(s.history)-1] == cmd {
+		return
+	}
+	s.history = append(s.history, cmd)
+}
+
+// renderTranscriptViewportLocked redraws only the middle transcript rows.
+// This is used for smooth scrollback so the logo/header/prompt don't flicker
+// or disappear while users navigate output.
+func (s *shell) renderTranscriptViewportLocked(preserveCursor bool) {
+	if s.bodyRows <= 0 || s.boxW <= 0 || s.bodyStartRow <= 0 {
+		return
+	}
+	if preserveCursor {
+		saveCursor(s.out)
+		hideCursor(s.out)
+	}
+
+	lines := s.transcriptViewportLines()
+	for i := 0; i < s.bodyRows; i++ {
+		moveTo(s.out, s.bodyStartRow+i, 1)
+		if i < len(lines) {
+			l := lines[i]
+			drawContentLine(s.out, s.boxW, strings.Repeat(" ", innerPad)+l, innerPad+visibleLen(l))
+		} else {
+			drawBlankLine(s.out, s.boxW)
+		}
+	}
+
+	if preserveCursor {
+		restoreCursor(s.out)
+		showCursor(s.out)
+		flush(s.out)
+	}
+}
+
+func (s *shell) transcriptViewportLines() []string {
+	if s.bodyRows <= 0 {
+		return nil
+	}
+
+	if s.lastCmd == "" {
+		s.scrollMax = 0
+		s.scrollOffset = 0
+		if s.statusMsg != "" {
+			return []string{s.statusMsg}
+		}
+		return nil
+	}
+
+	bodyLines := buildTranscript(s.lastCmd, s.lastOut, s.boxW-innerPad*2-2)
+	viewRows := s.bodyRows
+	overflow := len(bodyLines) > viewRows
+	if overflow && viewRows > 1 {
+		viewRows-- // reserve one row for the scroll indicator
+	}
+	if viewRows < 1 {
+		viewRows = 1
+	}
+
+	s.scrollMax = max(0, len(bodyLines)-viewRows)
+	if s.scrollOffset > s.scrollMax {
+		s.scrollOffset = s.scrollMax
+	}
+	if s.scrollOffset < 0 {
+		s.scrollOffset = 0
+	}
+
+	start := s.scrollMax - s.scrollOffset
+	if start < 0 {
+		start = 0
+	}
+	end := min(len(bodyLines), start+viewRows)
+	visible := append([]string{}, bodyLines[start:end]...)
+
+	if overflow {
+		topHidden := start
+		bottomHidden := len(bodyLines) - end
+		visible = append([]string{scrollIndicator(topHidden, bottomHidden)}, visible...)
+	}
+	if s.statusMsg != "" && len(visible) < s.bodyRows {
+		visible = append(visible, s.statusMsg)
+	}
+	return visible
+}
+
 // readCommand reads a command in raw mode so the terminal does not echo
 // typed characters wherever it wants. Instead, we paint the input string
 // into the inner prompt box ourselves on every keypress.
@@ -547,6 +593,8 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 	defer func() { _ = term.Restore(f.Fd(), state) }()
 
 	var input []rune
+	historyIndex := len(s.history)
+	draft := ""
 	buf := make([]byte, 1)
 
 	for {
@@ -570,15 +618,36 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 		case 127, 8: // Backspace / Ctrl+H
 			if len(input) > 0 {
 				input = input[:len(input)-1]
+				historyIndex = len(s.history)
+				draft = string(input)
 				s.renderPromptInput(string(input))
 			}
 		case 27: // ESC sequence (arrows, PageUp/PageDown, Home/End)
 			seq := readEscapeSequence(f)
 			switch seq {
-			case "A": // Up
-				s.scrollBy(1, string(input))
-			case "B": // Down
-				s.scrollBy(-1, string(input))
+			case "A": // Up = previous command (normal shell behavior)
+				if historyIndex == len(s.history) {
+					draft = string(input)
+				}
+				if historyIndex > 0 {
+					historyIndex--
+					input = []rune(s.history[historyIndex])
+					s.renderPromptInput(string(input))
+				}
+			case "B": // Down = next command / restore draft
+				if historyIndex < len(s.history)-1 {
+					historyIndex++
+					input = []rune(s.history[historyIndex])
+					s.renderPromptInput(string(input))
+				} else if historyIndex == len(s.history)-1 {
+					historyIndex = len(s.history)
+					input = []rune(draft)
+					s.renderPromptInput(string(input))
+				}
+			case "1;5A", "5A": // Ctrl+Up = scroll transcript one page up
+				s.scrollBy(max(1, s.bodyRows-2), string(input))
+			case "1;5B", "5B": // Ctrl+Down = scroll transcript one page down
+				s.scrollBy(-max(1, s.bodyRows-2), string(input))
 			case "5~": // PageUp
 				s.scrollBy(max(1, s.bodyRows-2), string(input))
 			case "6~": // PageDown
@@ -593,6 +662,8 @@ func (s *shell) readCommand(f *os.File) (string, error) {
 			// UTF-8 can be added later if needed.
 			if b >= 32 && b != 127 {
 				input = append(input, rune(b))
+				historyIndex = len(s.history)
+				draft = string(input)
 				s.renderPromptInput(string(input))
 			}
 		}
@@ -632,6 +703,7 @@ func (s *shell) scrollBy(delta int, input string) {
 		s.mu.Unlock()
 		return
 	}
+	old := s.scrollOffset
 	s.scrollOffset += delta
 	if s.scrollOffset < 0 {
 		s.scrollOffset = 0
@@ -639,32 +711,43 @@ func (s *shell) scrollBy(delta int, input string) {
 	if s.scrollOffset > s.scrollMax {
 		s.scrollOffset = s.scrollMax
 	}
-	s.mu.Unlock()
-
-	s.repaint()
-	if input != "" {
-		s.renderPromptInput(input)
+	if s.scrollOffset == old {
+		s.mu.Unlock()
+		return
 	}
+	s.renderTranscriptViewportLocked(true)
+	if input != "" {
+		s.renderPromptInputLocked(input)
+	}
+	s.mu.Unlock()
 }
 
 func (s *shell) scrollToTop(input string) {
 	s.mu.Lock()
-	s.scrollOffset = s.scrollMax
-	s.mu.Unlock()
-	s.repaint()
-	if input != "" {
-		s.renderPromptInput(input)
+	if s.scrollMax == 0 {
+		s.mu.Unlock()
+		return
 	}
+	s.scrollOffset = s.scrollMax
+	s.renderTranscriptViewportLocked(true)
+	if input != "" {
+		s.renderPromptInputLocked(input)
+	}
+	s.mu.Unlock()
 }
 
 func (s *shell) scrollToBottom(input string) {
 	s.mu.Lock()
-	s.scrollOffset = 0
-	s.mu.Unlock()
-	s.repaint()
-	if input != "" {
-		s.renderPromptInput(input)
+	if s.scrollMax == 0 {
+		s.mu.Unlock()
+		return
 	}
+	s.scrollOffset = 0
+	s.renderTranscriptViewportLocked(true)
+	if input != "" {
+		s.renderPromptInputLocked(input)
+	}
+	s.mu.Unlock()
 }
 
 func (s *shell) renderPromptInput(input string) {
@@ -813,13 +896,13 @@ func buildTranscript(cmd, output string, maxWidth int) []string {
 func scrollIndicator(topHidden, bottomHidden int) string {
 	switch {
 	case topHidden > 0 && bottomHidden > 0:
-		return ui.Dim(fmt.Sprintf("↑ %d earlier · ↓ %d later · PgUp/PgDn scroll · End bottom", topHidden, bottomHidden))
+		return ui.Dim(fmt.Sprintf("Ctrl+↑ %d earlier · Ctrl+↓ %d later · PgUp/PgDn page · End bottom", topHidden, bottomHidden))
 	case topHidden > 0:
-		return ui.Dim(fmt.Sprintf("↑ %d earlier · PgUp/Home scroll · End bottom", topHidden))
+		return ui.Dim(fmt.Sprintf("Ctrl+↑ %d earlier · PgUp/Home top · End bottom", topHidden))
 	case bottomHidden > 0:
-		return ui.Dim(fmt.Sprintf("↓ %d later · PgDn/End scroll", bottomHidden))
+		return ui.Dim(fmt.Sprintf("Ctrl+↓ %d later · PgDn/End bottom", bottomHidden))
 	default:
-		return ui.Dim("↑/↓ scroll · PgUp/PgDn page")
+		return ui.Dim("Ctrl+↑/↓ scroll · PgUp/PgDn page")
 	}
 }
 
