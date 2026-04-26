@@ -160,7 +160,8 @@ func printRootHelp() {
 	fmt.Println("  " + ui.Cyan("shell") + "                  Start the boxed PostQ shell")
 	fmt.Println("  " + ui.Cyan("scan url") + " <host>...     TLS handshake + cert quantum-risk scan")
 	fmt.Println("  " + ui.Cyan("scan code") + " <path>       Static crypto-misuse scan (beta)")
-	fmt.Println("  " + ui.Cyan("scan cloud aws") + "          Server-side AWS KMS inventory")
+	fmt.Println("  " + ui.Cyan("scan cloud aws") + "        Server-side AWS KMS inventory")
+	fmt.Println("  " + ui.Cyan("scan cloud azure") + "     Server-side Azure Key Vault inventory")
 	fmt.Println("  " + ui.Cyan("scan list") + "              Recent scans uploaded to your org")
 	fmt.Println("  " + ui.Cyan("sign") + "                   Sign a payload with a managed hybrid key")
 	fmt.Println("  " + ui.Cyan("verify") + "                 Verify a composite hybrid signature")
@@ -335,7 +336,7 @@ func runScan(args []string, build BuildInfo) error {
 		return runScanCloud(args[1:], build)
 	case "code":
 		return runScanCode(args[1:], build)
-	case "github", "azure", "k8s", "kubernetes", "bulk", "iac", "deps":
+	case "github", "k8s", "kubernetes", "bulk", "iac", "deps":
 		return fmt.Errorf("scan %s: not implemented yet (coming soon)", args[0])
 	default:
 		printScanHelp()
@@ -349,13 +350,13 @@ func printScanHelp() {
 	fmt.Println(ui.Bold("SUBCOMMANDS"))
 	fmt.Println("  " + ui.Cyan("url") + "        TLS handshake + cert quantum-risk scan")
 	fmt.Println("  " + ui.Cyan("cloud aws") + "  Inventory AWS KMS keys (server-side via PostQ API)")
+	fmt.Println("  " + ui.Cyan("cloud azure") + "  Inventory Azure Key Vault keys (server-side via PostQ API)")
 	fmt.Println("  " + ui.Cyan("code") + "       " + ui.Yellow("(beta)") + " Static crypto-misuse scan on a local repo")
 	fmt.Println("  " + ui.Cyan("list") + "       Show recent scans uploaded to your org")
 	fmt.Println("  " + ui.Dim("iac        Terraform / Bicep / Helm crypto-config scan (soon)"))
 	fmt.Println("  " + ui.Dim("deps       Lockfile + manifest crypto-library audit (soon)"))
 	fmt.Println("  " + ui.Dim("github     Repo-wide static analysis (soon)"))
-	fmt.Println("  " + ui.Dim("cloud azure   Key Vault / App Service / Storage scan (soon)"))
-	fmt.Println("  " + ui.Dim("k8s        In-cluster TLS secrets / ingress / mTLS scan (soon)"))
+	fmt.Println("  " + ui.Dim("k8s        In-cluster TLS secrets / ingress / mTLS scan (use postq-agent helm chart)"))
 	fmt.Println()
 	fmt.Println(ui.Bold("EXAMPLES"))
 	fmt.Println("  postq scan url example.com")
@@ -656,8 +657,10 @@ func runScanCloud(args []string, build BuildInfo) error {
 	switch args[0] {
 	case "aws":
 		return runScanCloudAWS(args[1:], build)
-	case "azure", "kubernetes", "k8s":
-		return fmt.Errorf("scan cloud %s: not implemented yet (coming soon)", args[0])
+	case "azure":
+		return runScanCloudAzure(args[1:], build)
+	case "kubernetes", "k8s":
+		return fmt.Errorf("scan cloud %s: not implemented yet (use the in-cluster postq-agent helm chart)", args[0])
 	default:
 		printScanCloudHelp()
 		return fmt.Errorf("unknown cloud provider: %s", args[0])
@@ -669,8 +672,8 @@ func printScanCloudHelp() {
 	fmt.Println()
 	fmt.Println(ui.Bold("PROVIDERS"))
 	fmt.Println("  " + ui.Cyan("aws") + "      Inventory KMS keys across regions")
-	fmt.Println("  " + ui.Dim("azure    Key Vault scan (soon)"))
-	fmt.Println("  " + ui.Dim("k8s      In-cluster scan (soon)"))
+	fmt.Println("  " + ui.Cyan("azure") + "    Inventory Key Vault keys across a subscription")
+	fmt.Println("  " + ui.Dim("k8s      In-cluster scan (use the postq-agent Helm chart)"))
 	fmt.Println()
 	fmt.Println(ui.Dim("These scans run server-side via the PostQ API, so the CLI never"))
 	fmt.Println(ui.Dim("touches your AWS credentials directly."))
@@ -680,6 +683,8 @@ func printScanCloudHelp() {
 	fmt.Println("  postq scan cloud aws --account 123456789012 --regions us-east-1,us-west-2")
 	fmt.Println("  postq scan cloud aws --account 123456789012 \\")
 	fmt.Println("      --role-arn arn:aws:iam::123456789012:role/PostQScanner --external-id postq")
+	fmt.Println("  postq scan cloud azure --subscription 00000000-0000-0000-0000-000000000000 \\")
+	fmt.Println("      --tenant <tenant-id> --client-id <sp-client-id> --client-secret <sp-secret>")
 }
 
 func runScanCloudAWS(args []string, build BuildInfo) error {
@@ -746,6 +751,87 @@ Exits with code 2 if the scan finds Critical or High risk (CI gate).`)
 
 	fmt.Println()
 	fmt.Println(ui.Bold("PostQ cloud scan") + " — " + ui.Cyan("aws/"+resp.Data.Target))
+	fmt.Printf("Mode:         %s\n", resp.Data.Mode)
+	fmt.Printf("Risk score:   %d/100  (%s)\n", resp.Data.RiskScore, ui.RiskBadge(report.RiskLevel(resp.Data.RiskLevel)))
+	fmt.Printf("Resources:    %d\n", resp.Data.ResourcesCount)
+	fmt.Printf("  Vulnerable: %d\n", resp.Data.Summary.QuantumVulnerable)
+	fmt.Printf("  PQ-ready:   %d\n", resp.Data.Summary.PqReady)
+	fmt.Printf("Findings:     %d\n", resp.Data.FindingsCount)
+	fmt.Printf("%s %s\n", ui.Dim("View:"), ui.Blue(resp.Data.URL))
+
+	switch resp.Data.RiskLevel {
+	case "Critical", "High":
+		exitOrReturn(2)
+	}
+	return nil
+}
+
+func runScanCloudAzure(args []string, build BuildInfo) error {
+	fs := flag.NewFlagSet("scan cloud azure", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage: postq scan cloud azure --subscription <id> [flags]
+
+Triggers a server-side Azure Key Vault scan via the PostQ API. Authenticate
+either with a service principal (--tenant + --client-id + --client-secret)
+or rely on whatever credentials the API host already has (Managed Identity,
+azd login, AZURE_* env vars).
+
+Exits with code 2 if the scan finds Critical or High risk (CI gate).`)
+		fs.PrintDefaults()
+	}
+	apiKey := fs.String("api-key", "", "Override saved API key")
+	endpoint := fs.String("api-endpoint", "", "Override saved API endpoint")
+	subscription := fs.String("subscription", "", "Azure subscription id")
+	tenant := fs.String("tenant", "", "Azure AD tenant id (service principal auth)")
+	clientID := fs.String("client-id", "", "Service-principal client/app id")
+	clientSecret := fs.String("client-secret", "", "Service-principal client secret")
+	vaults := fs.String("vaults", "", "Comma-separated list of vault names to scan (default: all)")
+	asJSON := fs.Bool("json", false, "Machine-readable JSON output")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	target := strings.TrimSpace(*subscription)
+	if target == "" {
+		fs.Usage()
+		return fmt.Errorf("--subscription is required")
+	}
+
+	cfg, err := config.Resolve(*endpoint, *apiKey)
+	if err != nil {
+		return err
+	}
+	if cfg.APIKey == "" {
+		return fmt.Errorf("not authenticated — run `postq auth login --api-key …`")
+	}
+
+	req := &apiclient.CloudScanRequest{
+		Provider: "azure",
+		Target:   target,
+		Azure: &apiclient.CloudScanAzureOptions{
+			SubscriptionID: target,
+			TenantID:       *tenant,
+			ClientID:       *clientID,
+			ClientSecret:   *clientSecret,
+			VaultNames:     splitCSV(*vaults),
+		},
+	}
+
+	cl := apiclient.New(cfg.APIEndpoint, cfg.APIKey, build.userAgent())
+	fmt.Fprintf(os.Stderr, "%s scanning azure subscription %s ...\n", ui.Dim("→"), target)
+	resp, err := cl.ScanCloud(context.Background(), req)
+	if err != nil {
+		return err
+	}
+
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(resp.Data)
+	}
+
+	fmt.Println()
+	fmt.Println(ui.Bold("PostQ cloud scan") + " — " + ui.Cyan("azure/"+resp.Data.Target))
 	fmt.Printf("Mode:         %s\n", resp.Data.Mode)
 	fmt.Printf("Risk score:   %d/100  (%s)\n", resp.Data.RiskScore, ui.RiskBadge(report.RiskLevel(resp.Data.RiskLevel)))
 	fmt.Printf("Resources:    %d\n", resp.Data.ResourcesCount)
