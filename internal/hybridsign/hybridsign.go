@@ -44,14 +44,14 @@ func New(endpoint, apiKey, userAgent string) *Client {
 
 // Key is a managed signing key (without secret material).
 type Key struct {
-	ID         string                 `json:"id"`
-	Name       string                 `json:"name"`
-	Algorithm  string                 `json:"algorithm"`
-	CreatedAt  string                 `json:"createdAt"`
-	RevokedAt  *string                `json:"revokedAt,omitempty"`
-	LastUsedAt *string                `json:"lastUsedAt,omitempty"`
-	Metadata   map[string]any         `json:"metadata,omitempty"`
-	PublicKey  string                 `json:"publicKey,omitempty"` // present on create / get
+	ID         string         `json:"id"`
+	Name       string         `json:"name"`
+	Algorithm  string         `json:"algorithm"`
+	CreatedAt  string         `json:"createdAt"`
+	RevokedAt  *string        `json:"revokedAt,omitempty"`
+	LastUsedAt *string        `json:"lastUsedAt,omitempty"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	PublicKey  string         `json:"publicKey,omitempty"` // present on create / get
 }
 
 // SignResult is what /v1/sign returns.
