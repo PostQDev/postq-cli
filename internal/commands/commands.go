@@ -373,16 +373,25 @@ func runScanURL(args []string, build BuildInfo) error {
 
 Performs a TLS handshake against each host (default port 443) and reports
 quantum-vulnerable cipher suites, public key algorithms, and certificate
-signatures. Results are uploaded to PostQ unless --no-upload is set.
+signatures.
+
+By default the scan runs SERVER-SIDE on api.postq.dev (requires an API
+key) so every CLI gets the same scanner, HNDL scoring, and PQ probe as
+the dashboard. Pass --local to run the scan in-process instead (works
+offline, falls back to the legacy CLI scanner with no PQ probe / HNDL).
+
+Results are uploaded to PostQ unless --no-upload is set (--no-upload
+also implies --local).
 
 Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 		fs.PrintDefaults()
 	}
 	apiKey := fs.String("api-key", "", "Override saved API key")
 	endpoint := fs.String("api-endpoint", "", "Override saved API endpoint")
-	noUpload := fs.Bool("no-upload", false, "Don't POST results to PostQ")
+	noUpload := fs.Bool("no-upload", false, "Don't POST results to PostQ (implies --local)")
+	local := fs.Bool("local", false, "Run the TLS scan locally instead of server-side")
 	asJSON := fs.Bool("json", false, "Machine-readable JSON output")
-	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification")
+	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification (local mode only)")
 	timeout := fs.Duration("timeout", 10*time.Second, "Per-host TLS timeout")
 	concurrency := fs.Int("concurrency", 4, "Number of hosts to scan in parallel")
 	if err := fs.Parse(args); err != nil {
@@ -407,23 +416,24 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 		OS:       runtime.GOOS,
 	}
 
+	// --no-upload forces local-only (nothing to talk to the API for).
+	if *noUpload {
+		*local = true
+	}
+
+	// Server-side mode requires an API key.
+	if !*local && cfg.APIKey == "" {
+		fmt.Fprintln(os.Stderr, ui.Yellow("warning:")+" no API key configured — falling back to --local (run `postq auth login --api-key …` to use the server-side scanner)")
+		*local = true
+		*noUpload = true
+	}
+
 	var client *apiclient.Client
-	if !*noUpload && cfg.APIKey != "" {
+	if cfg.APIKey != "" {
 		client = apiclient.New(cfg.APIEndpoint, cfg.APIKey, build.userAgent())
 	}
-	if !*noUpload && cfg.APIKey == "" {
-		fmt.Fprintln(os.Stderr, ui.Yellow("warning:")+" no API key configured — skipping upload (run `postq auth login --api-key …`)")
-	}
 
-	type scanOutcome struct {
-		Target    string
-		Sub       *report.Submission
-		Result    *scanurl.Result
-		PortalURL string
-		Err       error
-	}
-
-	out := make([]scanOutcome, len(targets))
+	out := make([]urlScanOutcome, len(targets))
 	sem := make(chan struct{}, max(1, *concurrency))
 	var wg sync.WaitGroup
 
@@ -435,34 +445,11 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			res, err := scanurl.Scan(t, scanurl.Options{
-				Timeout:            *timeout,
-				InsecureSkipVerify: *insecure,
-			})
-			if err != nil {
-				out[i] = scanOutcome{Target: t, Err: err}
+			if *local {
+				out[i] = runLocalURLScan(t, agent, client, *noUpload, *insecure, *timeout)
 				return
 			}
-			sub := &report.Submission{
-				Type:      "url",
-				Target:    t,
-				Source:    "cli",
-				RiskScore: res.RiskScore,
-				RiskLevel: res.RiskLevel,
-				Findings:  res.Findings,
-				Metadata:  res.Metadata,
-				Agent:     agent,
-			}
-			oc := scanOutcome{Target: t, Sub: sub, Result: res}
-			if client != nil {
-				resp, err := client.Submit(context.Background(), sub)
-				if err != nil {
-					oc.Err = fmt.Errorf("upload: %w", err)
-				} else {
-					oc.PortalURL = resp.Data.URL
-				}
-			}
-			out[i] = oc
+			out[i] = runRemoteURLScan(t, client, agent, *insecure, *timeout)
 		}()
 	}
 	wg.Wait()
@@ -474,12 +461,13 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 			if oc.Err != nil {
 				item["error"] = oc.Err.Error()
 			} else {
-				item["riskScore"] = oc.Sub.RiskScore
-				item["riskLevel"] = oc.Sub.RiskLevel
-				item["findings"] = oc.Sub.Findings
-				item["metadata"] = oc.Sub.Metadata
+				item["riskScore"] = oc.RiskScore
+				item["riskLevel"] = oc.RiskLevel
+				item["findings"] = oc.Findings
+				item["metadata"] = oc.Metadata
 				item["portalUrl"] = oc.PortalURL
-				item["durationMs"] = oc.Result.DurationMS
+				item["durationMs"] = oc.DurationMS
+				item["mode"] = oc.Mode
 			}
 			payload = append(payload, item)
 		}
@@ -494,23 +482,111 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 				fmt.Printf("\n%s %s: %s\n", ui.Red("✗"), ui.Bold(oc.Target), oc.Err)
 				continue
 			}
-			printHumanReport(oc.Sub, oc.Result, oc.PortalURL)
+			printURLOutcome(oc)
 		}
 	}
 
 	worst := report.RiskSafe
 	for _, oc := range out {
-		if oc.Sub == nil {
+		if oc.Err != nil {
 			continue
 		}
-		if rank(oc.Sub.RiskLevel) > rank(worst) {
-			worst = oc.Sub.RiskLevel
+		if rank(oc.RiskLevel) > rank(worst) {
+			worst = oc.RiskLevel
 		}
 	}
 	if worst == report.RiskCritical || worst == report.RiskHigh {
 		exitOrReturn(2)
 	}
 	return nil
+}
+
+// urlScanOutcome is the unified result row used by `scan url` regardless of
+// whether the scan ran locally (scanurl.Scan) or server-side (POST /v1/scans/url).
+type urlScanOutcome struct {
+	Target     string
+	Mode       string // "local" | "live"
+	RiskScore  int
+	RiskLevel  report.RiskLevel
+	Findings   []report.Finding
+	Metadata   map[string]string
+	DurationMS int64
+	PortalURL  string
+	Err        error
+}
+
+// runLocalURLScan keeps the legacy in-process scanner for offline / no-key use.
+func runLocalURLScan(target string, agent report.Agent, client *apiclient.Client, noUpload, insecure bool, timeout time.Duration) urlScanOutcome {
+	res, err := scanurl.Scan(target, scanurl.Options{
+		Timeout:            timeout,
+		InsecureSkipVerify: insecure,
+	})
+	if err != nil {
+		return urlScanOutcome{Target: target, Mode: "local", Err: err}
+	}
+	oc := urlScanOutcome{
+		Target:     target,
+		Mode:       "local",
+		RiskScore:  res.RiskScore,
+		RiskLevel:  res.RiskLevel,
+		Findings:   res.Findings,
+		Metadata:   res.Metadata,
+		DurationMS: res.DurationMS,
+	}
+	if !noUpload && client != nil {
+		sub := &report.Submission{
+			Type:      "url",
+			Target:    target,
+			Source:    "cli",
+			RiskScore: res.RiskScore,
+			RiskLevel: res.RiskLevel,
+			Findings:  res.Findings,
+			Metadata:  res.Metadata,
+			Agent:     agent,
+		}
+		resp, err := client.Submit(context.Background(), sub)
+		if err != nil {
+			oc.Err = fmt.Errorf("upload: %w", err)
+		} else {
+			oc.PortalURL = resp.Data.URL
+		}
+	}
+	return oc
+}
+
+// runRemoteURLScan asks the API to perform the scan server-side via POST /v1/scans/url.
+func runRemoteURLScan(target string, client *apiclient.Client, agent report.Agent, insecure bool, timeout time.Duration) urlScanOutcome {
+	_ = agent // server stamps its own agent metadata
+	resp, err := client.ScanURL(context.Background(), &apiclient.URLScanRequest{
+		Target:             target,
+		InsecureSkipVerify: insecure,
+		TimeoutMS:          int(timeout / time.Millisecond),
+	})
+	if err != nil {
+		return urlScanOutcome{Target: target, Mode: "live", Err: err}
+	}
+	findings := make([]report.Finding, 0, len(resp.Data.Findings))
+	for _, f := range resp.Data.Findings {
+		findings = append(findings, report.Finding{
+			Severity:    report.Severity(f.Severity),
+			Title:       f.Title,
+			Description: f.Description,
+			Location:    f.Location,
+			Algorithm:   f.Algorithm,
+			Remediation: f.Remediation,
+			Vulnerable:  f.Vulnerable,
+		})
+	}
+	return urlScanOutcome{
+		Target:     resp.Data.Target,
+		Mode:       resp.Data.Mode,
+		RiskScore:  resp.Data.RiskScore,
+		RiskLevel:  report.RiskLevel(resp.Data.RiskLevel),
+		Findings:   findings,
+		Metadata:   resp.Data.Metadata,
+		DurationMS: resp.Data.ScanDurationMS,
+		PortalURL:  resp.Data.URL,
+	}
 }
 
 func rank(rl report.RiskLevel) int {
@@ -527,30 +603,45 @@ func rank(rl report.RiskLevel) int {
 	return 0
 }
 
-func printHumanReport(sub *report.Submission, res *scanurl.Result, portalURL string) {
+func printURLOutcome(oc urlScanOutcome) {
 	fmt.Println()
-	fmt.Println(ui.Bold("PostQ scan") + " — " + ui.Cyan(res.Host+":"+res.Port))
-	fmt.Printf("Risk score:   %d/100  (%s)\n", sub.RiskScore, ui.RiskBadge(sub.RiskLevel))
-	fmt.Printf("Findings:     %d\n", len(sub.Findings))
-	fmt.Println()
-
-	for _, k := range sortedKeys(res.Metadata) {
-		fmt.Printf("  %s %s\n", ui.Dim(pad(k+":", 22)), res.Metadata[k])
+	modeBadge := ""
+	if oc.Mode == "local" {
+		modeBadge = " " + ui.Dim("[local]")
+	} else if oc.Mode != "" && oc.Mode != "live" {
+		modeBadge = " " + ui.Dim("["+oc.Mode+"]")
 	}
+	fmt.Println(ui.Bold("PostQ scan") + " — " + ui.Cyan(oc.Target) + modeBadge)
+	fmt.Printf("Risk score:   %d/100  (%s)\n", oc.RiskScore, ui.RiskBadge(oc.RiskLevel))
+	fmt.Printf("Findings:     %d\n", len(oc.Findings))
 	fmt.Println()
 
-	for _, f := range sub.Findings {
+	for _, k := range sortedKeys(oc.Metadata) {
+		fmt.Printf("  %s %s\n", ui.Dim(pad(k+":", 22)), oc.Metadata[k])
+	}
+	if len(oc.Metadata) > 0 {
+		fmt.Println()
+	}
+
+	for _, f := range oc.Findings {
 		fmt.Printf("%s %s\n", ui.SeverityBadge(f.Severity), ui.Bold(f.Title))
-		fmt.Printf("    %s\n", f.Description)
+		if f.Description != "" {
+			fmt.Printf("    %s\n", f.Description)
+		}
 		if f.Algorithm != "" {
 			fmt.Printf("    %s %s\n", ui.Dim("algo:"), f.Algorithm)
 		}
-		fmt.Printf("    %s %s\n\n", ui.Dim("fix: "), f.Remediation)
+		if f.Remediation != "" {
+			fmt.Printf("    %s %s\n", ui.Dim("fix: "), f.Remediation)
+		}
+		fmt.Println()
 	}
 
-	fmt.Printf("%s %dms\n", ui.Dim("Took"), res.DurationMS)
-	if portalURL != "" {
-		fmt.Printf("%s %s\n", ui.Dim("View:"), ui.Blue(portalURL))
+	if oc.DurationMS > 0 {
+		fmt.Printf("%s %dms\n", ui.Dim("Took"), oc.DurationMS)
+	}
+	if oc.PortalURL != "" {
+		fmt.Printf("%s %s\n", ui.Dim("View:"), ui.Blue(oc.PortalURL))
 	}
 }
 

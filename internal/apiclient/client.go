@@ -229,3 +229,83 @@ func (c *Client) ScanCloud(ctx context.Context, req *CloudScanRequest) (*CloudSc
 	}
 	return &parsed, nil
 }
+
+// URLScanRequest is the body for POST /v1/scans/url.
+type URLScanRequest struct {
+	Target             string `json:"target"`
+	InsecureSkipVerify bool   `json:"insecureSkipVerify,omitempty"`
+	TimeoutMS          int    `json:"timeoutMs,omitempty"`
+}
+
+// URLScanFinding mirrors a row from the inline findings array on /v1/scans/url.
+type URLScanFinding struct {
+	Severity    string `json:"severity"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Location    string `json:"location"`
+	Algorithm   string `json:"algorithm,omitempty"`
+	Remediation string `json:"remediation"`
+	Vulnerable  bool   `json:"vulnerable"`
+}
+
+// URLScanResponse is the API's success payload for POST /v1/scans/url.
+type URLScanResponse struct {
+	Success bool `json:"success"`
+	Data    struct {
+		ID             string            `json:"id"`
+		CreatedAt      string            `json:"createdAt"`
+		Target         string            `json:"target"`
+		Mode           string            `json:"mode"`
+		RiskScore      int               `json:"riskScore"`
+		RiskLevel      string            `json:"riskLevel"`
+		FindingsCount  int               `json:"findingsCount"`
+		Metadata       map[string]string `json:"metadata"`
+		Findings       []URLScanFinding  `json:"findings"`
+		ScanDurationMS int64             `json:"scanDurationMs"`
+		URL            string            `json:"url"`
+	} `json:"data"`
+	Error string `json:"error,omitempty"`
+}
+
+// ScanURL POSTs to /v1/scans/url asking the API to run a server-side
+// TLS / cert / HNDL scan and persist findings.
+func (c *Client) ScanURL(ctx context.Context, req *URLScanRequest) (*URLScanResponse, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.endpoint+"/v1/scans/url",
+		bytes.NewReader(body),
+	)
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(httpReq)
+
+	// URL scans run server-side and may take a few seconds for a TLS
+	// handshake + PQ probe — give them more headroom than the default 30s.
+	httpClient := &http.Client{Timeout: 90 * time.Second}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("post /v1/scans/url: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, _ := io.ReadAll(resp.Body)
+	var parsed URLScanResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+	}
+	if resp.StatusCode >= 400 || !parsed.Success {
+		msg := parsed.Error
+		if msg == "" {
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+		}
+		return nil, fmt.Errorf("api error: %s", msg)
+	}
+	return &parsed, nil
+}
