@@ -2,6 +2,7 @@
 package commands
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"flag"
@@ -394,13 +395,21 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification (local mode only)")
 	timeout := fs.Duration("timeout", 10*time.Second, "Per-host TLS timeout")
 	concurrency := fs.Int("concurrency", 4, "Number of hosts to scan in parallel")
+	targetList := fs.String("target-list", "", "Read additional hosts from a file (one per line, # for comments)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	targets := fs.Args()
+	if *targetList != "" {
+		extra, err := readTargetList(*targetList)
+		if err != nil {
+			return fmt.Errorf("--target-list: %w", err)
+		}
+		targets = append(targets, extra...)
+	}
 	if len(targets) == 0 {
 		fs.Usage()
-		return fmt.Errorf("at least one host is required")
+		return fmt.Errorf("at least one host is required (positional or via --target-list)")
 	}
 
 	cfg, err := config.Resolve(*endpoint, *apiKey)
@@ -1066,4 +1075,29 @@ func sevRank(s string) int {
 		return 0
 	}
 	return 1
+}
+
+// readTargetList reads a file of hosts (one per line). Blank lines and
+// lines starting with '#' are ignored.
+func readTargetList(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var out []string
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		out = append(out, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
