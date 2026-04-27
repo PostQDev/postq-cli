@@ -69,6 +69,8 @@ func runShell(build BuildInfo) error {
 			return runVerify(args[1:], build)
 		case "keys":
 			return runKeys(args[1:], build)
+		case "ledger":
+			return runLedger(args[1:])
 		case "version":
 			printVersion(build)
 			return nil
@@ -114,6 +116,8 @@ func Run(args []string, build BuildInfo) error {
 		return runVerify(args[1:], build)
 	case "keys":
 		return runKeys(args[1:], build)
+	case "ledger":
+		return runLedger(args[1:])
 	default:
 		printRootHelp()
 		return fmt.Errorf("unknown command: %s", args[0])
