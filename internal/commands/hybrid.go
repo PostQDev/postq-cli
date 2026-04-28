@@ -177,6 +177,10 @@ func runKeys(args []string, build BuildInfo) error {
 		return runKeysGet(args[1:], build)
 	case "revoke", "delete", "rm":
 		return runKeysRevoke(args[1:], build)
+	case "rotate":
+		return runKeysRotate(args[1:], build)
+	case "audit":
+		return runKeysAudit(args[1:], build)
 	default:
 		printKeysHelp()
 		return fmt.Errorf("unknown keys subcommand: %s", args[0])
@@ -373,12 +377,16 @@ func printKeysHelp() {
 	fmt.Println("  create   Mint a new composite (ML-DSA + Ed25519) signing key")
 	fmt.Println("  list     List your org's hybrid keys")
 	fmt.Println("  get      Show one key with its composite public key")
+	fmt.Println("  rotate   Rotate a key (old material kept for verification)")
+	fmt.Println("  audit    Recent ledger entries for one key")
 	fmt.Println("  revoke   Revoke a key (existing signatures still verify)")
 	fmt.Println()
 	fmt.Println(ui.Bold("EXAMPLES"))
 	fmt.Println("  postq keys create --name release-signing")
 	fmt.Println("  postq keys list")
 	fmt.Println("  postq keys get <id>")
+	fmt.Println("  postq keys rotate <id>")
+	fmt.Println("  postq keys audit <id> --limit 50")
 	fmt.Println("  postq keys revoke <id>")
 }
 
@@ -452,4 +460,101 @@ func boolGlyph(b bool) string {
 		return ui.Green("ok")
 	}
 	return ui.Red("FAIL")
+}
+
+func runKeysRotate(args []string, build BuildInfo) error {
+	fs := flag.NewFlagSet("keys rotate", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: postq keys rotate <id> [--name <new label>] [--json]")
+		fs.PrintDefaults()
+	}
+	name := fs.String("name", "", "Optional new label for the rotated key")
+	asJSON := fs.Bool("json", false, "Print full result as JSON")
+	apiKey := fs.String("api-key", "", "Override saved API key")
+	endpoint := fs.String("api-endpoint", "", "Override saved API endpoint")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return fmt.Errorf("exactly one key id is required")
+	}
+	cl, err := newHybridClient(*endpoint, *apiKey, build)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	key, err := cl.RotateKey(ctx, rest[0], *name)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return jsonStdout(key)
+	}
+	fmt.Printf("%s rotated key (old material kept for verification)\n", ui.Green("✓"))
+	fmt.Printf("  id:        %s\n", key.ID)
+	fmt.Printf("  algorithm: %s\n", key.Algorithm)
+	fmt.Printf("  created:   %s\n", key.CreatedAt)
+	fmt.Println()
+	fmt.Println(ui.Dim("New public key (distribute to verifiers):"))
+	fmt.Println(key.PublicKey)
+	return nil
+}
+
+func runKeysAudit(args []string, build BuildInfo) error {
+	fs := flag.NewFlagSet("keys audit", flag.ContinueOnError)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "Usage: postq keys audit <id> [--limit N] [--json]")
+		fs.PrintDefaults()
+	}
+	limit := fs.Int("limit", 50, "Maximum entries to return")
+	asJSON := fs.Bool("json", false, "Print as JSON")
+	apiKey := fs.String("api-key", "", "Override saved API key")
+	endpoint := fs.String("api-endpoint", "", "Override saved API endpoint")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return fmt.Errorf("exactly one key id is required")
+	}
+	cl, err := newHybridClient(*endpoint, *apiKey, build)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	entries, err := cl.AuditKey(ctx, rest[0], *limit)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		return jsonStdout(entries)
+	}
+	if len(entries) == 0 {
+		fmt.Println(ui.Dim("No audit entries for this key."))
+		return nil
+	}
+	fmt.Printf("%s  %s  %s  %s\n",
+		ui.Dim(pad("SEQ", 6)),
+		ui.Dim(pad("EVENT", 24)),
+		ui.Dim(pad("CREATED", 22)),
+		ui.Dim("ACTOR"),
+	)
+	for _, e := range entries {
+		actor := ""
+		if e.Actor != nil {
+			actor = *e.Actor
+		}
+		fmt.Printf("%s  %s  %s  %s\n",
+			pad(fmt.Sprintf("%d", e.Seq), 6),
+			pad(e.EventType, 24),
+			pad(e.CreatedAt, 22),
+			actor,
+		)
+	}
+	return nil
 }

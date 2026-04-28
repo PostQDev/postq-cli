@@ -33,6 +33,18 @@ func runLedger(args []string) error {
 			return fmt.Errorf("usage: postq ledger verify <bundle.json>")
 		}
 		return ledgerVerify(args[1])
+	case "entries":
+		return runLedgerEntries(args[1:])
+	case "append":
+		return runLedgerAppend(args[1:])
+	case "checkpoints":
+		return runLedgerCheckpoints(args[1:])
+	case "seal":
+		return runLedgerSeal(args[1:])
+	case "proof":
+		return runLedgerProof(args[1:])
+	case "bundle":
+		return runLedgerBundle(args[1:])
 	case "help", "--help", "-h":
 		printLedgerHelp()
 		return nil
@@ -46,15 +58,22 @@ func printLedgerHelp() {
 	fmt.Println(`postq ledger — PostQ tamper-evident audit log
 
 Subcommands:
-  verify <bundle.json>   re-derive the chain + Merkle root from a bundle and
+  entries [--since N] [--limit N] [--type T] [--json]
+                         List recent ledger entries.
+  append --name NAME [--message M] [--subject ID] [--data @file|JSON]
+                         Append a custom entry to the org ledger.
+  checkpoints [--limit N] [--json]
+                         List signed Merkle-root checkpoints.
+  seal                   Force a new checkpoint over current entries.
+  proof <entryId>        Get a Merkle inclusion proof (auto-seals if needed).
+  bundle [--out file]    Download a verifiable bundle. Defaults to stdout.
+  verify <bundle.json>   Re-derive the chain + Merkle root from a bundle and
                          confirm every entry hashes to its stored entry_hash
                          and that each checkpoint's root matches.
 
-Download a bundle from the dashboard (Ledger → "Download verifiable bundle")
-or via the API:
-
-  curl -H "Authorization: Bearer $POSTQ_API_KEY" \
-       https://api.postq.dev/v1/ledger/bundle | jq .data > bundle.json
+Quick offline verify after download:
+  postq ledger bundle --out bundle.json
+  postq ledger verify bundle.json
 
 Exit codes:
   0   bundle intact

@@ -69,6 +69,10 @@ func runShell(build BuildInfo) error {
 			return runVerify(args[1:], build)
 		case "keys":
 			return runKeys(args[1:], build)
+		case "policies":
+			return runPolicies(args[1:], build)
+		case "vault":
+			return runVault(args[1:], build)
 		case "ledger":
 			return runLedger(args[1:])
 		case "version":
@@ -116,6 +120,10 @@ func Run(args []string, build BuildInfo) error {
 		return runVerify(args[1:], build)
 	case "keys":
 		return runKeys(args[1:], build)
+	case "policies":
+		return runPolicies(args[1:], build)
+	case "vault":
+		return runVault(args[1:], build)
 	case "ledger":
 		return runLedger(args[1:])
 	default:
@@ -171,6 +179,9 @@ func printRootHelp() {
 	fmt.Println("  " + ui.Cyan("sign") + "                   Sign a payload with a managed hybrid key")
 	fmt.Println("  " + ui.Cyan("verify") + "                 Verify a composite hybrid signature")
 	fmt.Println("  " + ui.Cyan("keys") + "                   Manage hybrid (PQ + classical) signing keys")
+	fmt.Println("  " + ui.Cyan("policies") + "               Manage org-level signing policies")
+	fmt.Println("  " + ui.Cyan("ledger") + "                 Inspect, seal, and verify the audit ledger")
+	fmt.Println("  " + ui.Cyan("vault") + "                  Configure per-org KMS / BYOK settings")
 	fmt.Println("  " + ui.Cyan("auth login") + "             Save API key for uploads")
 	fmt.Println("  " + ui.Cyan("auth whoami") + "            Show active credentials (masked)")
 	fmt.Println("  " + ui.Cyan("auth logout") + "            Forget saved credentials")
