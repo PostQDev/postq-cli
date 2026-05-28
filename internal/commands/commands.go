@@ -75,6 +75,8 @@ func runShell(build BuildInfo) error {
 			return runVault(args[1:], build)
 		case "ledger":
 			return runLedger(args[1:])
+		case "attest":
+			return runAttest(args[1:], build)
 		case "version":
 			printVersion(build)
 			return nil
@@ -126,6 +128,8 @@ func Run(args []string, build BuildInfo) error {
 		return runVault(args[1:], build)
 	case "ledger":
 		return runLedger(args[1:])
+	case "attest":
+		return runAttest(args[1:], build)
 	default:
 		printRootHelp()
 		return fmt.Errorf("unknown command: %s", args[0])
@@ -181,6 +185,7 @@ func printRootHelp() {
 	fmt.Println("  " + ui.Cyan("keys") + "                   Manage hybrid (PQ + classical) signing keys")
 	fmt.Println("  " + ui.Cyan("policies") + "               Manage org-level signing policies")
 	fmt.Println("  " + ui.Cyan("ledger") + "                 Inspect, seal, and verify the audit ledger")
+	fmt.Println("  " + ui.Cyan("attest verify") + "          Re-verify an enclave attestation document")
 	fmt.Println("  " + ui.Cyan("vault") + "                  Configure per-org KMS / BYOK settings")
 	fmt.Println("  " + ui.Cyan("auth login") + "             Save API key for uploads")
 	fmt.Println("  " + ui.Cyan("auth whoami") + "            Show active credentials (masked)")

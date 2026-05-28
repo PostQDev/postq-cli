@@ -56,12 +56,26 @@ type Key struct {
 
 // SignResult is what /v1/sign returns.
 type SignResult struct {
-	KeyID         string `json:"keyId"`
-	Algorithm     string `json:"algorithm"`
-	Signature     string `json:"signature"` // base64 composite envelope
-	PublicKey     string `json:"publicKey"`
-	PayloadSha256 string `json:"payloadSha256"`
-	PayloadSize   int    `json:"payloadSize"`
+	KeyID         string             `json:"keyId"`
+	Algorithm     string             `json:"algorithm"`
+	Signature     string             `json:"signature"` // base64 composite envelope
+	PublicKey     string             `json:"publicKey"`
+	PayloadSha256 string             `json:"payloadSha256"`
+	PayloadSize   int                `json:"payloadSize"`
+	// Attestation is set when the signing key is bound to an attestation
+	// policy (i.e. a pqProvider that runs inside an enclave). Use
+	// `postq attest verify` to independently re-check the doc.
+	Attestation *Attestation `json:"attestation,omitempty"`
+}
+
+// Attestation is the per-sign attestation summary returned by /v1/sign.
+type Attestation struct {
+	Vendor    string `json:"vendor"`
+	ImageHash string `json:"imageHash"`
+	Counter   int    `json:"counter"`
+	DocB64    string `json:"docB64"`
+	Verdict   string `json:"verdict"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // VerifyResult is what /v1/verify returns.
