@@ -164,6 +164,26 @@ var rulePack = []rule{
 		discoveredBy: "postq-research",
 		pattern:      regexp.MustCompile(`(?i)(ed25519\.Sign|ecdsa\.SignASN1)`),
 	},
+	{
+		id:           "POSTQ-CODE-011",
+		title:        "Quantum-vulnerable RSA key generation",
+		desc:         "RSA key generation. RSA is broken by Shor's algorithm once a cryptographically relevant quantum computer (CRQC) exists — and long-lived keys are exposed to harvest-now-decrypt-later today.",
+		severity:     report.SeverityMedium,
+		remediation:  "Plan migration to ML-KEM (FIPS 203) for key establishment and ML-DSA (FIPS 204) for signatures. For a transition, use a hybrid scheme. See https://postq.dev/pqc-readiness-assessment",
+		algorithm:    "RSA",
+		discoveredBy: "postq-research",
+		pattern:      regexp.MustCompile(`(?i)(rsa\.GenerateKey|rsa\.generate_private_key|RSA\.generate\b|new\s+RSACryptoServiceProvider|KeyPairGenerator\.getInstance\(\s*"RSA")`),
+	},
+	{
+		id:           "POSTQ-CODE-012",
+		title:        "Quantum-vulnerable elliptic-curve key generation",
+		desc:         "Elliptic-curve key generation (ECDSA/ECDH). EC discrete log is broken by Shor's algorithm once a CRQC exists.",
+		severity:     report.SeverityMedium,
+		remediation:  "Plan migration to ML-DSA (FIPS 204) for signatures and ML-KEM (FIPS 203) for key exchange, or a hybrid scheme during transition. See https://postq.dev/pqc-readiness-assessment",
+		algorithm:    "ECDSA/ECDH",
+		discoveredBy: "postq-research",
+		pattern:      regexp.MustCompile(`(?i)(ecdsa\.GenerateKey|ec\.generate_private_key|ECDSA\.generate|elliptic\.(P256|P384|P521)\(|new\s+ECDsaCng|KeyPairGenerator\.getInstance\(\s*"EC")`),
+	},
 }
 
 var skipDirs = map[string]bool{
