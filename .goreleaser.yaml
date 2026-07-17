@@ -18,9 +18,20 @@ builds:
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
       - -X main.date={{ .Date }}
+  - id: postq-mcp
+    main: ./cmd/postq-mcp
+    binary: postq-mcp
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.serverVersion={{ .Version }}
 
 archives:
   - id: postq
+    ids: [postq, postq-mcp]
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
@@ -32,6 +43,9 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+
+sboms:
+  - artifacts: archive
 
 snapshot:
   version_template: "{{ incpatch .Version }}-next"
@@ -85,3 +99,6 @@ release:
     ```
 
     Or grab a pre-built binary below.
+
+    Each archive also contains `postq-mcp`, the bounded stdio MCP server for
+    `scan_url`, `scan_code`, `sign`, and `verify` agent integrations.

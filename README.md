@@ -53,6 +53,9 @@ go install github.com/postqdev/postq-cli/cmd/postq@latest
 ### Pre-built binary (Linux / macOS / Windows)
 
 Download from the [latest release](https://github.com/PostQDev/postq-cli/releases/latest), extract, and put `postq` (or `postq.exe`) on your `PATH`.
+Release archives also contain `postq-mcp`, the stdio MCP companion for AI
+agents. Both binaries are static and covered by the same release checksums,
+SBOM, and provenance attestation.
 
 After any install method, start the interactive CLI:
 
@@ -125,8 +128,19 @@ Auth is stored at `~/.postq/config.json` (file mode `0600`). Override with:
 | `--regions <list>` (`scan cloud aws`)   | Comma-separated regions (default: `us-east-1,us-west-2,eu-west-1`) |
 | `--role-arn <arn>` (`scan cloud aws`)   | IAM role to assume in the target account                      |
 | `--external-id <id>` (`scan cloud aws`) | External ID for cross-account role assumption                 |
+| `POSTQ_MCP_TIMEOUT` (`postq-mcp`)        | Per-tool subprocess deadline (default 2m, bounded 1s–10m)       |
 
 The `scan cloud aws` subcommand uses your local AWS credentials (env vars, `~/.aws/credentials`, IMDS, etc.) and submits results to `POST /v1/scans/cloud`. It enumerates KMS keys across the requested regions and flags RSA / ECC keys as quantum-vulnerable.
+
+## MCP server
+
+`postq-mcp` exposes `scan_url`, `scan_code`, `sign`, and `verify` over stdio
+JSON-RPC. Protocol frames, signed payloads, subprocess output, and command
+runtime are bounded. Configure `POSTQ_BIN` only in a trusted MCP server config;
+it intentionally supports an absolute path so deployments can pin the exact
+`postq` binary being executed.
+
+See [cmd/postq-mcp/README.md](cmd/postq-mcp/README.md) for client examples.
 
 ## Exit codes
 
@@ -172,7 +186,7 @@ Required GitHub Secret on this repo: `HOMEBREW_TAP_TOKEN` (PAT with `contents:wr
 - `postq scan github <repo>` — static analysis of source for RSA/ECDSA/MD5
 - `postq scan k8s [--context …]` — TLS secrets, ingress certs, mTLS policies
 - `postq scan cloud aws` — KMS keys (shipped); ACM, ALB, S3, Secrets Manager next
-- `postq scan cloud azure [--subscription …]` — Key Vault, App Service, Storage
+- More Azure service coverage (Storage, databases, messaging)
 - `postq scan bulk --file targets.txt` — fan-out over many targets
 - Scoop bucket for Windows
 - Native packages (`.deb`, `.rpm`, `.apk`)

@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // DefaultEndpoint is the production PostQ API base URL.
@@ -53,6 +57,9 @@ func Load() (*Config, error) {
 
 // Save writes the config file with mode 0600.
 func Save(c *Config) error {
+	if err := ValidateEndpoint(c.APIEndpoint); err != nil {
+		return err
+	}
 	path, err := Path()
 	if err != nil {
 		return err
@@ -64,7 +71,43 @@ func Save(c *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-*")
+	if err != nil {
+		return fmt.Errorf("create config temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod config: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write config: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync config: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace config: %w", err)
+	}
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("open config directory: %w", err)
+	}
+	defer dirHandle.Close()
+	if err := dirHandle.Sync(); err != nil {
+		return fmt.Errorf("sync config directory: %w", err)
+	}
+	return nil
 }
 
 // Delete removes the config file (used by `postq auth logout`).
@@ -98,7 +141,38 @@ func Resolve(flagEndpoint, flagKey string) (*Config, error) {
 	if flagKey != "" {
 		c.APIKey = flagKey
 	}
+	if err := ValidateEndpoint(c.APIEndpoint); err != nil {
+		return nil, err
+	}
 	return c, nil
+}
+
+// ValidateEndpoint prevents credentials from being sent over plaintext HTTP.
+// Loopback HTTP remains available for local API development and tests.
+func ValidateEndpoint(endpoint string) error {
+	if strings.TrimSpace(endpoint) == "" {
+		return errors.New("API endpoint is required")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("invalid API endpoint %q", endpoint)
+	}
+	if u.User != nil {
+		return errors.New("API endpoint must not contain embedded credentials")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	host := u.Hostname()
+	if u.Scheme == "http" && (host == "localhost" || isLoopback(host)) {
+		return nil
+	}
+	return fmt.Errorf("API endpoint must use HTTPS (HTTP is allowed only for loopback development)")
+}
+
+func isLoopback(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // MaskKey returns a redacted version safe to print (e.g. `pq_live_a1b2…`).

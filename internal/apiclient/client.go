@@ -8,10 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/postqdev/postq-cli/internal/report"
 )
+
+const maxResponseBytes = 4 << 20 // 4 MiB
+
+var apiKeyPattern = regexp.MustCompile(`pq_(?:live|test)_[a-zA-Z0-9]+`)
 
 // Client posts scan submissions to /v1/scans on the PostQ API.
 type Client struct {
@@ -87,18 +92,21 @@ func (c *Client) Submit(ctx context.Context, sub *report.Submission) (*SubmitRes
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read /v1/scans response: %w", err)
+	}
 
 	var parsed SubmitResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, redact(string(raw)))
 	}
 	if resp.StatusCode >= 400 || !parsed.Success {
 		msg := parsed.Error
 		if msg == "" {
-			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, redact(string(raw)))
 		}
-		return nil, fmt.Errorf("api error: %s", msg)
+		return nil, fmt.Errorf("api error: %s", redact(msg))
 	}
 	return &parsed, nil
 }
@@ -118,17 +126,20 @@ func (c *Client) List(ctx context.Context, limit int) (*ListResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read /v1/scans response: %w", err)
+	}
 	var parsed ListResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, redact(string(raw)))
 	}
 	if resp.StatusCode >= 400 || !parsed.Success {
 		msg := parsed.Error
 		if msg == "" {
-			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, redact(string(raw)))
 		}
-		return nil, fmt.Errorf("api error: %s", msg)
+		return nil, fmt.Errorf("api error: %s", redact(msg))
 	}
 	return &parsed, nil
 }
@@ -142,7 +153,7 @@ func (c *Client) setHeaders(req *http.Request) {
 
 // CloudScanRequest is the body for POST /v1/scans/cloud.
 type CloudScanRequest struct {
-	Provider string                 `json:"provider"`        // aws | azure | kubernetes
+	Provider string                 `json:"provider"`        // aws | azure
 	Target   string                 `json:"target"`          // account id / subscription id / cluster name
 	AWS      *CloudScanAWSOptions   `json:"aws,omitempty"`   // AWS-only options
 	Azure    *CloudScanAzureOptions `json:"azure,omitempty"` // Azure-only options
@@ -215,17 +226,20 @@ func (c *Client) ScanCloud(ctx context.Context, req *CloudScanRequest) (*CloudSc
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read /v1/scans/cloud response: %w", err)
+	}
 	var parsed CloudScanResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, redact(string(raw)))
 	}
 	if resp.StatusCode >= 400 || !parsed.Success {
 		msg := parsed.Error
 		if msg == "" {
-			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, redact(string(raw)))
 		}
-		return nil, fmt.Errorf("api error: %s", msg)
+		return nil, fmt.Errorf("api error: %s", redact(msg))
 	}
 	return &parsed, nil
 }
@@ -295,17 +309,35 @@ func (c *Client) ScanURL(ctx context.Context, req *URLScanRequest) (*URLScanResp
 	}
 	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := readResponseBody(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read /v1/scans/url response: %w", err)
+	}
 	var parsed URLScanResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("parse response (status %d): %s", resp.StatusCode, redact(string(raw)))
 	}
 	if resp.StatusCode >= 400 || !parsed.Success {
 		msg := parsed.Error
 		if msg == "" {
-			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, string(raw))
+			msg = fmt.Sprintf("status %d: %s", resp.StatusCode, redact(string(raw)))
 		}
-		return nil, fmt.Errorf("api error: %s", msg)
+		return nil, fmt.Errorf("api error: %s", redact(msg))
 	}
 	return &parsed, nil
+}
+
+func readResponseBody(r io.Reader) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(r, maxResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) > maxResponseBytes {
+		return nil, fmt.Errorf("response exceeds %d bytes", maxResponseBytes)
+	}
+	return raw, nil
+}
+
+func redact(s string) string {
+	return apiKeyPattern.ReplaceAllString(s, "[REDACTED_API_KEY]")
 }

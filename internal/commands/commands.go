@@ -387,6 +387,27 @@ func printScanHelp() {
 	fmt.Println("  postq scan list --limit 10")
 }
 
+// parsePermuted parses flags that appear before, after, or interspersed with
+// positional arguments and returns the positionals. Go's stdlib flag package
+// stops at the first non-flag token, so `scan url host --json` would otherwise
+// silently drop --json. Re-running Parse across the gaps makes flag position
+// irrelevant, which keeps the CLI predictable for humans and coding agents
+// that emit flags in any order.
+func parsePermuted(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, rest[0])
+		args = rest[1:]
+	}
+}
+
 func runScanURL(args []string, build BuildInfo) error {
 	fs := flag.NewFlagSet("scan url", flag.ContinueOnError)
 	fs.Usage = func() {
@@ -416,10 +437,10 @@ Exits with code 2 if any scan finds Critical or High risk (useful for CI).`)
 	timeout := fs.Duration("timeout", 10*time.Second, "Per-host TLS timeout")
 	concurrency := fs.Int("concurrency", 4, "Number of hosts to scan in parallel")
 	targetList := fs.String("target-list", "", "Read additional hosts from a file (one per line, # for comments)")
-	if err := fs.Parse(args); err != nil {
+	targets, err := parsePermuted(fs, args)
+	if err != nil {
 		return err
 	}
-	targets := fs.Args()
 	if *targetList != "" {
 		extra, err := readTargetList(*targetList)
 		if err != nil {
@@ -998,10 +1019,10 @@ This is a beta detector pack — high-signal, not exhaustive.`)
 	asJSON := fs.Bool("json", false, "Machine-readable JSON output")
 	maxBytes := fs.Int64("max-file-size", 1<<20, "Skip files larger than this many bytes")
 	severity := fs.String("min-severity", "low", "Minimum severity to print (info|low|medium|high|critical)")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parsePermuted(fs, args)
+	if err != nil {
 		return err
 	}
-	rest := fs.Args()
 	if len(rest) == 0 {
 		fs.Usage()
 		return fmt.Errorf("path is required (try `postq scan code .`)")
