@@ -58,7 +58,7 @@ func TestCommandTimeoutIsBounded(t *testing.T) {
 	}
 }
 
-func TestScanURLArgsRequireExplicitUpload(t *testing.T) {
+func TestScanURLArgsAllowExplicitOfflineMode(t *testing.T) {
 	offline := strings.Join(scanURLArgs("example.com", false), " ")
 	if !strings.Contains(offline, "--local") || !strings.Contains(offline, "--no-upload") {
 		t.Fatalf("offline args = %q, want local no-upload", offline)
