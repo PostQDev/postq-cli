@@ -153,6 +153,9 @@ func toolList() []map[string]interface{} {
 	strProp := func(desc string) map[string]interface{} {
 		return map[string]interface{}{"type": "string", "description": desc}
 	}
+	boolProp := func(desc string, defaultValue bool) map[string]interface{} {
+		return map[string]interface{}{"type": "boolean", "description": desc, "default": defaultValue}
+	}
 	obj := func(props map[string]interface{}, required ...string) map[string]interface{} {
 		return map[string]interface{}{
 			"type":       "object",
@@ -165,12 +168,14 @@ func toolList() []map[string]interface{} {
 			"name": "scan_url",
 			"description": "Scan a host's live TLS configuration for quantum-vulnerable cryptography " +
 				"(RSA/ECDSA certificate keys, ECDHE key exchange, weak signature algorithms). " +
-				"Runs an offline TLS handshake; no credentials required. Returns JSON findings " +
-				"with severity and remediation guidance.",
+				"Runs offline by default. Set upload=true to use the authenticated PostQ API, " +
+				"persist the scan, and return a dashboard URL. Returns JSON findings with severity " +
+				"and remediation guidance.",
 			"inputSchema": obj(map[string]interface{}{
-				"host": strProp("Hostname or host:port to scan, e.g. example.com"),
+				"host":   strProp("Hostname or host:port to scan, e.g. example.com"),
+				"upload": boolProp("Persist the scan to the authenticated PostQ organization and return a dashboard URL", false),
 			}, "host"),
-			"annotations": map[string]interface{}{"readOnlyHint": true},
+			"annotations": map[string]interface{}{"readOnlyHint": false},
 		},
 		{
 			"name": "scan_code",
@@ -232,7 +237,8 @@ func toolsCall(params json.RawMessage) (interface{}, *rpcError) {
 
 func callScanURL(args json.RawMessage) interface{} {
 	var a struct {
-		Host string `json:"host"`
+		Host   string `json:"host"`
+		Upload bool   `json:"upload"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return toolError("arguments must be a JSON object")
@@ -243,7 +249,7 @@ func callScanURL(args json.RawMessage) interface{} {
 	if len(a.Host) > 500 {
 		return toolError("host exceeds 500 characters")
 	}
-	so, se, code := runPostq(nil, "scan", "url", a.Host, "--local", "--no-upload", "--json")
+	so, se, code := runPostq(nil, scanURLArgs(a.Host, a.Upload)...)
 	// `scan url` exits 2 when it finds High/Critical risk — that is a successful
 	// scan, not a failure. Only treat a spawn failure / empty output as an error.
 	if code < 0 {
@@ -253,6 +259,14 @@ func callScanURL(args json.RawMessage) interface{} {
 		return toolError(firstNonEmpty(se, "scan produced no output"))
 	}
 	return toolText(so)
+}
+
+func scanURLArgs(host string, upload bool) []string {
+	args := []string{"scan", "url", host}
+	if !upload {
+		args = append(args, "--local", "--no-upload")
+	}
+	return append(args, "--json")
 }
 
 func callScanCode(args json.RawMessage) interface{} {

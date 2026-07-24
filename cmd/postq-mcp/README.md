@@ -8,12 +8,16 @@ It is a **pure-stdlib, single Go binary** — no runtime, no `node_modules`, not
 
 | Tool | What it does | Needs API key? |
 |---|---|---|
-| `scan_url` | Live TLS handshake against a host; reports quantum-vulnerable keys/ciphers/signatures | No (offline) |
+| `scan_url` | Live TLS handshake against a host; `upload: true` persists it and returns a dashboard URL | No offline; yes when uploading |
 | `scan_code` | Scans a local directory for crypto-misuse patterns (weak RNG, MD5/SHA-1 signing, JWT `alg:none`, hardcoded keys, …) | No (offline) |
 | `sign` | Signs a payload with a hybrid post-quantum key (ML-DSA + classical) | Yes (`POSTQ_API_KEY`) |
 | `verify` | Verifies a hybrid post-quantum signature | Yes (`POSTQ_API_KEY`) |
 
-`scan_url` and `scan_code` run fully offline and need no credentials — ideal for a live demo.
+`scan_url` defaults to offline mode and `scan_code` is always local. To make a
+URL scan appear in the dashboard, call `scan_url` with `upload: true`. The CLI
+then resolves credentials in this order: saved `~/.postq/config.json`,
+`POSTQ_API_KEY` / `POSTQ_API_ENDPOINT`, then explicit CLI flags. Environment and
+flag values override the saved file.
 
 ## Install
 
@@ -42,7 +46,7 @@ go build -o ~/go/bin/postq      ./cmd/postq   # the CLI the server drives
 
 ## Configure
 
-The server locates the CLI via the `POSTQ_BIN` environment variable (default: `postq` on `PATH`). Set it to an explicit, trusted build to pin exactly which binary executes. Do not let untrusted users control the MCP process environment. Run `postq auth login` once if you want to use `sign` and `verify`; offline scans need no credentials.
+The server locates the CLI via the `POSTQ_BIN` environment variable (default: `postq` on `PATH`). Set it to an explicit, trusted build to pin exactly which binary executes. Do not let untrusted users control the MCP process environment. Run `postq auth login` once if you want to upload URL scans or use `sign` and `verify`; offline scans need no credentials.
 
 ### VS Code / GitHub Copilot
 
@@ -63,7 +67,7 @@ Run **MCP: Add Server** from the Command Palette, choose **stdio**, and enter
 
 Start the server from the inline action in that file. In Copilot Chat, select
 **Configure Tools**, enable the PostQ tools, and ask: *"Use PostQ to scan
-example.com for quantum-vulnerable cryptography."* Use absolute binary paths in
+example.com and upload the result to my dashboard."* Use absolute binary paths in
 shared or production configurations. Never commit an API key to `mcp.json`.
 
 ### Claude Desktop
@@ -119,6 +123,9 @@ Restart Claude Desktop, then ask: *"Use postq to scan example.com for quantum-vu
 ## Security boundary
 
 - `scan_url` makes an outbound TLS connection to the requested host.
+- `scan_url` remains local unless the caller explicitly supplies `upload: true`.
+  Uploaded scans use the API key resolved by the pinned PostQ CLI and belong to
+  the organization that issued that key.
 - `scan_code` reads the requested local file or directory. Client tool approval
   is the authorization boundary; do not approve paths the agent should not read.
 - `sign` and `verify` may call `https://api.postq.dev` using the API key resolved
@@ -135,6 +142,7 @@ Restart Claude Desktop, then ask: *"Use postq to scan example.com for quantum-vu
 | Server starts but tools fail with `postq` not found | Set `POSTQ_BIN` to the absolute CLI path. Check with `command -v postq`. |
 | Client cannot start `postq-mcp` | Use the absolute server path and confirm it is executable. Check with `command -v postq-mcp`. |
 | `sign` or `verify` returns an auth error | Run `postq auth login`, or provide `POSTQ_API_KEY` through the MCP client's secret facility. |
+| URL scan succeeds but does not appear in the dashboard | Offline is the default. Ask the agent to upload it, or call `scan_url` with `upload: true`. Confirm the dashboard is showing the organization that issued the active API key. |
 | Scan times out | Increase `POSTQ_MCP_TIMEOUT`, for example `5m`; values are bounded to 1 second–10 minutes. |
 | Tools do not appear after editing config | Restart the server or run **MCP: List Servers**, then refresh/restart it. |
 | Need protocol diagnostics | Use the smoke test below and inspect the client's MCP output log; protocol data is stdout and diagnostics are stderr. |

@@ -57,3 +57,14 @@ func TestCommandTimeoutIsBounded(t *testing.T) {
 		t.Fatalf("timeout = %s, want 10m", got)
 	}
 }
+
+func TestScanURLArgsRequireExplicitUpload(t *testing.T) {
+	offline := strings.Join(scanURLArgs("example.com", false), " ")
+	if !strings.Contains(offline, "--local") || !strings.Contains(offline, "--no-upload") {
+		t.Fatalf("offline args = %q, want local no-upload", offline)
+	}
+	upload := strings.Join(scanURLArgs("example.com", true), " ")
+	if strings.Contains(upload, "--local") || strings.Contains(upload, "--no-upload") {
+		t.Fatalf("upload args = %q, must allow authenticated server-side persistence", upload)
+	}
+}
