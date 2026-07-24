@@ -76,12 +76,14 @@ brews:
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://postq.dev"
-    description: "PostQ CLI — quantum-risk scanning for TLS, certs, and cloud crypto."
+    description: "PostQ CLI and MCP server for quantum-risk scanning and hybrid signing."
     license: "MIT"
     install: |
       bin.install "postq"
+      bin.install "postq-mcp"
     test: |
       system "#{bin}/postq", "version"
+      assert_match "postq-mcp", shell_output("#{bin}/postq-mcp </dev/null 2>&1")
 
 release:
   github:

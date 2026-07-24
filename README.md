@@ -42,17 +42,19 @@ Scan results are uploaded to the PostQ portal at `https://app.postq.dev/scans/<i
 
 ```bash
 brew install PostQDev/tap/postq
+# Installs both postq and postq-mcp.
 ```
 
 ### Go (any platform)
 
 ```bash
 go install github.com/postqdev/postq-cli/cmd/postq@latest
+go install github.com/postqdev/postq-cli/cmd/postq-mcp@latest
 ```
 
 ### Pre-built binary (Linux / macOS / Windows)
 
-Download from the [latest release](https://github.com/PostQDev/postq-cli/releases/latest), extract, and put `postq` (or `postq.exe`) on your `PATH`.
+Download from the [latest release](https://github.com/PostQDev/postq-cli/releases/latest), extract, and put `postq` and `postq-mcp` (or their `.exe` files) on your `PATH`.
 Release archives also contain `postq-mcp`, the stdio MCP companion for AI
 agents. Both binaries are static and covered by the same release checksums,
 SBOM, and provenance attestation.
@@ -141,6 +143,8 @@ it intentionally supports an absolute path so deployments can pin the exact
 `postq` binary being executed.
 
 See [cmd/postq-mcp/README.md](cmd/postq-mcp/README.md) for client examples.
+The guide includes VS Code/GitHub Copilot, Claude Desktop, Cursor, manual
+protocol checks, security boundaries, and troubleshooting.
 
 ## Exit codes
 
